@@ -1,6 +1,22 @@
+# FastAPI and web framework
 fastapi==0.121.3
+uvicorn[standard]==0.34.0
 pydantic==2.12.4
-uvicorn==0.34.0
+pydantic-settings==2.6.0
+
+# Permit.io
+permit==2.4.2
+
+# Caching
+cachetools==5.5.0
+
+# HTTP client
+aiohttp==3.10.10
+requests==2.32.3
+
+# Kafka (for client SDK)
 confluent_kafka==2.12.2
+
+# Development dependencies
 bandit==1.8.0
 safety==2.3.5
