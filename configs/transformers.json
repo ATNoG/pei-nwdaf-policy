@@ -1,0 +1,72 @@
+{
+  "pipelines": {
+    "ingestion-service_to_data-processor-60s": {
+      "steps": [
+        {
+          "type": "filter",
+          "params": {
+            "mode": "whitelist",
+            "fields": [
+              "timestamp",
+              "cell_index",
+              "mean_latency",
+              "stddev_latency",
+              "mean_throughput",
+              "stddev_throughput"
+            ]
+          }
+        }
+      ]
+    },
+    "data-processor-60s_to_data-storage": {
+      "steps": [
+        {
+          "type": "hashing",
+          "params": {
+            "fields": ["cell_id"],
+            "salt": "nwdaf-salt-2024"
+          }
+        }
+      ]
+    },
+    "data-storage_to_ml-service": {
+      "steps": [
+        {
+          "type": "filter",
+          "params": {
+            "mode": "whitelist",
+            "fields": [
+              "timestamp",
+              "cell_index",
+              "features",
+              "mean_latency"
+            ]
+          }
+        }
+      ]
+    },
+    "ml-service_to_decision": {
+      "steps": [
+        {
+          "type": "filter",
+          "params": {
+            "mode": "blacklist",
+            "fields": ["model_version", "confidence_interval", "debug_info"]
+          }
+        }
+      ]
+    },
+    "ml-service_to_frontend": {
+      "steps": [
+        {
+          "type": "substitution",
+          "params": {
+            "substitutions": {
+              "internal_model_id": "REDACTED"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

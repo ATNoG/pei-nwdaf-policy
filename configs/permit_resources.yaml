@@ -1,0 +1,179 @@
+# Permit.io Resource Definitions
+# Stays within 25 resource limit for free tier
+
+# System Resources (5)
+resources:
+  - key: policy_config
+    name: Policy Configuration
+    description: Policy service configuration management
+    actions:
+      - read
+      - write
+
+  - key: component_registration
+    name: Component Registration
+    description: Component registration and management
+    actions:
+      - create
+      - read
+      - delete
+
+  - key: transformer_config
+    name: Transformer Configuration
+    description: Data transformer pipeline configuration
+    actions:
+      - read
+      - write
+
+  - key: system_action_train
+    name: Train Action
+    description: ML model training action
+    actions:
+      - execute
+
+  - key: system_action_inference
+    name: Inference Action
+    description: ML model inference action
+    actions:
+      - execute
+
+# Data Resources (10) - for different data types in the MLOps pipeline
+  - key: network_metrics
+    name: Network Metrics
+    description: Network performance metrics data
+    actions:
+      - read
+      - write
+
+  - key: user_behavior
+    name: User Behavior
+    description: User behavior analytics data
+    actions:
+      - read
+      - write
+
+  - key: anomaly_scores
+    name: Anomaly Scores
+    description: Anomaly detection scores
+    actions:
+      - read
+      - write
+
+  - key: predictions
+    name: Predictions
+    description: ML model predictions
+    actions:
+      - read
+      - write
+
+  - key: latency_data
+    name: Latency Data
+    description: Network latency measurements
+    actions:
+      - read
+      - write
+
+  - key: throughput_data
+    name: Throughput Data
+    description: Network throughput measurements
+    actions:
+      - read
+      - write
+
+  - key: cell_metrics
+    name: Cell Metrics
+    description: Cell network metrics
+    actions:
+      - read
+      - write
+
+  - key: time_series
+    name: Time Series Data
+    description: Time series analytics data
+    actions:
+      - read
+      - write
+
+  - key: aggregated
+    name: Aggregated Data
+    description: Aggregated analytics data
+    actions:
+      - read
+      - write
+
+  - key: raw
+    name: Raw Data
+    description: Raw unprocessed data
+    actions:
+      - read
+      - write
+
+# ML Model Resources (5) - grouped by data type
+  - key: network_predictor
+    name: Network Predictor
+    description: ML models for network predictions
+    actions:
+      - read
+      - inference
+
+  - key: fraud_detector
+    name: Fraud Detector
+    description: ML models for fraud detection
+    actions:
+      - read
+      - inference
+
+  - key: anomaly_detector
+    name: Anomaly Detector
+    description: ML models for anomaly detection
+    actions:
+      - read
+      - inference
+
+  - key: latency_forecaster
+    name: Latency Forecaster
+    description: ML models for latency forecasting
+    actions:
+      - read
+      - inference
+
+  - key: capacity_planner
+    name: Capacity Planner
+    description: ML models for capacity planning
+    actions:
+      - read
+      - inference
+
+# Access Resources (5) - endpoints and actions
+  - key: endpoint_api_access
+    name: API Access
+    description: API endpoint access
+    actions:
+      - read
+      - write
+
+  - key: endpoint_kafka_topic
+    name: Kafka Topic
+    description: Kafka topic access
+    actions:
+      - consume
+      - produce
+
+  - key: endpoint_database_query
+    name: Database Query
+    description: Database query access
+    actions:
+      - read
+      - write
+
+  - key: action_read
+    name: Read Action
+    description: Generic read action
+    actions:
+      - execute
+
+  - key: action_write
+    name: Write Action
+    description: Generic write action
+    actions:
+      - execute
