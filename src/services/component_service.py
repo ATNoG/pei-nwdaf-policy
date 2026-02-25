@@ -7,6 +7,10 @@ from src.permit.permit_client import PermitClient
 from src.core.config import PolicyConfig
 from src.core.exceptions import ComponentRegistrationError, ComponentNotFoundError
 from src.models.enums import ComponentType
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class ComponentService:
@@ -52,6 +56,7 @@ class ComponentService:
         Returns:
             ComponentConfig of registered component
         """
+        logger.info(f"ComponentService: Registering component {component_id} of type {component_type}")
         config = ComponentConfig(
             component_id=component_id,
             component_type=component_type,
@@ -61,14 +66,17 @@ class ComponentService:
         )
 
         # Register in policy engine
-        success = self.policy_engine.register_component(config)
+        logger.info(f"ComponentService: Calling policy_engine.register_component for {component_id}")
+        success = await self.policy_engine.register_component(config)
         if not success:
             raise ComponentRegistrationError(f"Failed to register component: {component_id}")
 
         # Auto-create attributes if enabled
         if auto_create_attributes and data_columns:
+            logger.info(f"ComponentService: Creating attributes for {component_id}")
             await self._create_attributes_from_columns(component_id, data_columns)
 
+        logger.info(f"ComponentService: Successfully registered component {component_id}")
         return config
 
     async def _create_attributes_from_columns(
@@ -77,7 +85,7 @@ class ComponentService:
         columns: List[str]
     ) -> None:
         """
-        Auto-create Permit.io attributes from data columns.
+        Auto-create Permit.io attributes from data columns (async).
 
         Args:
             component_id: Component ID
@@ -87,7 +95,7 @@ class ComponentService:
             attr_key = f"{self.config.ATTRIBUTE_PREFIX}{column}"
 
             try:
-                self.permit_client.create_resource_attribute(
+                await self.permit_client.create_resource_attribute(
                     resource_key="data",
                     attribute_key=attr_key,
                     attribute_type="string",
@@ -97,12 +105,8 @@ class ComponentService:
                 # Ignore if already exists
                 pass
 
-        # Assign attributes to component
-        attributes = {
-            f"{self.config.ATTRIBUTE_PREFIX}{col}": True
-            for col in columns
-        }
-        self.permit_client.set_user_attributes(component_id, attributes)
+        # Note: set_user_attributes is not available in Permit.io API 2.0.0
+        # Attributes are set during user sync via the sync_user call
 
     async def unregister_component(self, component_id: str) -> bool:
         """

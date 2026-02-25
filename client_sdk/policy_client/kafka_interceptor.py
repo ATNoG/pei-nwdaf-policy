@@ -1,5 +1,5 @@
 """
-Kafka Interceptor - Policy enforcement for Kafka messages using PyKafBridge.
+Kafka Middleware - Policy enforcement for Kafka messages using PyKafBridge.
 
 This module provides policy enforcement on Kafka messages using the existing
 PyKafBridge class from the Comms/kafka component.
@@ -14,8 +14,10 @@ from .client import PolicyClient
 logger = logging.getLogger(__name__)
 
 
-class PyKafBridgePolicyInterceptor:
+class PKBMiddleware:
     """
+    Kafka middleware for policy enforcement on PyKafBridge messages.
+
     Wraps a PyKafBridge instance to apply policy enforcement on consumed messages.
 
     Messages that are denied by policy are silently skipped.
@@ -34,7 +36,7 @@ class PyKafBridgePolicyInterceptor:
         transform_function: Optional[Callable] = None
     ):
         """
-        Initialize the Kafka Policy Interceptor for PyKafBridge.
+        Initialize the PKB Middleware for PyKafBridge.
 
         Args:
             kafka_bridge: PyKafBridge instance from Comms/kafka
@@ -56,7 +58,7 @@ class PyKafBridgePolicyInterceptor:
         self._processed_messages = []
 
         logger.info(
-            f"PyKafBridgePolicyInterceptor initialized: "
+            f"PKBMiddleware initialized: "
             f"component={component_id}, source={source_component}, enabled={enable_policy}"
         )
 
@@ -150,7 +152,7 @@ def create_pykafbridge_policy_consumer(
     source_component: str,
     enable_policy: bool = False,
     transform_function: Optional[Callable] = None
-) -> PyKafBridgePolicyInterceptor:
+) -> PKBMiddleware:
     """
     Convenience function to create a policy-enabled PyKafBridge consumer.
 
@@ -163,7 +165,7 @@ def create_pykafbridge_policy_consumer(
         transform_function: Optional function to transform consumed data
 
     Returns:
-        PyKafBridgePolicyInterceptor instance
+        PKBMiddleware instance
 
     Example:
         from policy_client import PolicyClient
@@ -177,7 +179,7 @@ def create_pykafbridge_policy_consumer(
         # Start consumer
         await kafka_bridge.start_consumer()
 
-        # Wrap with policy interceptor
+        # Wrap with policy middleware
         policy_consumer = create_pykafbridge_policy_consumer(
             pykafbridge=kafka_bridge,
             policy_service_url="http://policy-service:8000",
@@ -198,8 +200,8 @@ def create_pykafbridge_policy_consumer(
         enable_policy=enable_policy
     )
 
-    # Create and return interceptor
-    return PyKafBridgePolicyInterceptor(
+    # Create and return middleware
+    return PKBMiddleware(
         kafka_bridge=pykafbridge,
         policy_client=policy_client,
         component_id=component_id,

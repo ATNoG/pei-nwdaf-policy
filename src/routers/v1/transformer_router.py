@@ -1,15 +1,20 @@
 """
 Transformer pipeline router - /api/v1/transformers/*
+
+IMPORTANT: Route order matters! More specific routes must be defined BEFORE
+catch-all routes like /{pipeline_id}.
 """
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from src.models.schemas import (
     TransformerPipelineConfig,
     TransformerPipelineResponse,
     TransformerStepConfig,
-    ErrorResponse
+    ErrorResponse,
+    FieldSyncRequest
 )
 from src.services.transformer_service import TransformerService
-from typing import Dict
+from typing import Dict, List, Any
 
 
 def get_transformer_service() -> TransformerService:
@@ -19,6 +24,83 @@ def get_transformer_service() -> TransformerService:
 
 router = APIRouter(prefix="/transformers", tags=["transformers"])
 
+# Data storage URL for field discovery
+DATA_STORAGE_URL = "http://data-storage:8000"
+
+
+# ==================== Field Discovery Endpoints ====================
+# NOTE: These MUST come first before /{pipeline_id} to avoid route conflicts
+# since /fields/{source}/{sink} would otherwise match /{pipeline_id} with pipeline_id="fields"
+
+@router.get("/fields/{source}/{sink}", response_model=List[dict])
+async def discover_fields(
+    source: str,
+    sink: str,
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> List[dict]:
+    """
+    Discover available fields for a specific pipeline by querying Data Storage.
+
+    Args:
+        source: Source component name
+        sink: Sink component/resource name
+        transformer_service: Transformer service instance
+
+    Returns:
+        List of field info dictionaries with name, type, category
+    """
+    try:
+        fields = await transformer_service.discover_fields(source, sink)
+        return fields
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "discovery_failed", "message": str(e)}
+        )
+
+
+@router.post("/fields/sync", response_model=Dict[str, Any])
+async def sync_field_attributes(
+    request: FieldSyncRequest,
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Sync discovered fields to Permit.io as resource attributes.
+
+    Creates Permit.io resource attributes for each discovered field,
+    allowing field-level permission control.
+
+    Args:
+        request: Sync request with source and sink
+        transformer_service: Transformer service instance
+
+    Returns:
+        Sync results with created attributes and status
+    """
+    try:
+        result = await transformer_service.sync_field_attributes(request.source, request.sink)
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "sync_failed", "message": str(e)}
+        )
+
+
+@router.get("/fields", response_model=Dict[str, List[dict]])
+async def list_discovered_fields(
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, List[dict]]:
+    """
+    List all discovered fields across all pipelines.
+
+    Returns:
+        Dictionary with pipeline_id -> list of field info
+    """
+    return await transformer_service.list_discovered_fields()
+
+
+# ==================== Pipeline CRUD Endpoints ====================
 
 @router.post("/{pipeline_id}", response_model=TransformerPipelineResponse, status_code=status.HTTP_201_CREATED)
 async def create_pipeline(

@@ -5,10 +5,10 @@ services:
       dockerfile: Dockerfile
     container_name: policy-service
     ports:
-      - "8000:8000"
+      - "7777:8000"
     environment:
       - PERMIT_API_KEY=${PERMIT_API_KEY}
-      - PERMIT_PDP_URL=http://permit:7766
+      - PERMIT_PDP_URL=${PERMIT_PDP_URL:-http://permit:7000}
       - AUTO_CREATE_ATTRIBUTES=${AUTO_CREATE_ATTRIBUTES:-true}
       - DECISION_CACHE_TTL=${DECISION_CACHE_TTL:-60}
       - REQUIRE_REGISTRATION=${REQUIRE_REGISTRATION:-false}

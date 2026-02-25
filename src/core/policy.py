@@ -79,9 +79,9 @@ class PolicyEngine:
             "churn_prediction": "fraud_detector_role",
         }
 
-    def register_component(self, config: ComponentConfig) -> bool:
+    async def register_component(self, config: ComponentConfig) -> bool:
         """
-        Register a component and sync it to Permit.io as a user.
+        Register a component and sync it to Permit.io as a user (async).
 
         Args:
             config: ComponentConfig with component details
@@ -89,30 +89,40 @@ class PolicyEngine:
         Returns:
             True if successful, False otherwise
         """
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             # Sync component to Permit.io as a user
             user_data = {
                 "key": config.component_id,
-                "id": config.component_id,
                 "attributes": {
                     "component_type": config.component_type,
                     "allowed_fields": config.allowed_fields,
                     **config.attributes,
                 }
             }
-            self.permit.sync_user(user_data)
+            logger.info(f"Registering component {config.component_id} with role {config.role}")
+            await self.permit.sync_user(user_data)
 
             # Assign role if specified
             if config.role:
-                self.permit.assign_role(
-                    user_key=config.component_id,
-                    role_key=config.role,
-                    tenant_id="default"
-                )
+                logger.info(f"Assigning role {config.role} to component {config.component_id}")
+                try:
+                    await self.permit.assign_role(
+                        user_key=config.component_id,
+                        role_key=config.role,
+                        tenant_id="default"
+                    )
+                except Exception as role_error:
+                    # Log but don't fail registration if role doesn't exist
+                    logger.warning(f"Failed to assign role {config.role} to component {config.component_id}: {role_error}")
+                    logger.warning(f"Component {config.component_id} registered but role assignment skipped. Create the role in Permit.io dashboard or API.")
 
             self.components[config.component_id] = config
+            logger.info(f"Successfully registered component {config.component_id}")
             return True
         except Exception as e:
+            logger.error(f"Error registering component {config.component_id}: {type(e).__name__}: {e}", exc_info=True)
             raise AuthorizationError(
                 f"Error registering component {config.component_id}",
                 source=config.component_id,
@@ -121,7 +131,7 @@ class PolicyEngine:
                 details={"error": str(e)}
             )
 
-    def register_ml_agent(
+    async def register_ml_agent(
         self,
         agent_id: str,
         model_name: str,
@@ -129,7 +139,7 @@ class PolicyEngine:
         data_type: str = "network_prediction"
     ) -> bool:
         """
-        Register an ML agent from MLflow/ML component.
+        Register an ML agent from MLflow/ML component (async).
 
         Args:
             agent_id: Unique identifier for the ML agent
@@ -153,9 +163,9 @@ class PolicyEngine:
                 "data_type": data_type,
             }
         )
-        return self.register_component(config)
+        return await self.register_component(config)
 
-    def register_data_source(
+    async def register_data_source(
         self,
         source_id: str,
         source_type: str,
@@ -178,7 +188,7 @@ class PolicyEngine:
             role="data_source_role",
             allowed_fields=allowed_fields or {}
         )
-        return self.register_component(config)
+        return await self.register_component(config)
 
     def add_field_filter(
         self,

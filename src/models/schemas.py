@@ -130,6 +130,12 @@ class FieldFilterResponse(BaseModel):
     denied_fields: List[str]
 
 
+class FieldSyncRequest(BaseModel):
+    """Request to sync field attributes to Permit.io."""
+    source: str = Field(..., description="Source component name")
+    sink: str = Field(..., description="Sink component/resource name")
+
+
 # ==================== Stats/Health Schemas ====================
 
 class PolicyStatsResponse(BaseModel):

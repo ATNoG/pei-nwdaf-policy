@@ -1,5 +1,6 @@
 """
 Custom exceptions for the Policy Service.
+"""
 from typing import Optional, Any
 
 

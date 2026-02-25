@@ -2,7 +2,7 @@
 
 from .client import PolicyClient, ProcessResult
 from .kafka_interceptor import (
-    PyKafBridgePolicyInterceptor,
+    PKBMiddleware,
     create_pykafbridge_policy_consumer,
     bind_policy_to_topic
 )
@@ -11,7 +11,7 @@ from .middleware import PolicyMiddleware
 __all__ = [
     "PolicyClient",
     "ProcessResult",
-    "PyKafBridgePolicyInterceptor",
+    "PKBMiddleware",
     "create_pykafbridge_policy_consumer",
     "bind_policy_to_topic",
     "PolicyMiddleware",

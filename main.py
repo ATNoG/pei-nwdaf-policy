@@ -180,10 +180,10 @@ async def health_check():
 
 # ==================== API Router Registration ====================
 
-from src.routers.v1.policy_router import router as policy_router
-from src.routers.v1.component_router import router as component_router
-from src.routers.v1.transformer_router import router as transformer_router
-from src.routers.v1.ml_router import router as ml_router
+from src.routers.v1.policy_router import router as policy_router, get_policy_service
+from src.routers.v1.component_router import router as component_router, get_component_service
+from src.routers.v1.transformer_router import router as transformer_router, get_transformer_service
+from src.routers.v1.ml_router import router as ml_router, get_ml_model_service
 
 
 # Override dependency injection for services
@@ -203,18 +203,18 @@ def get_ml_model_service_override() -> MLModelService:
     return ml_model_service
 
 
-# Set dependency overrides
-policy_router.dependency_overrides[get_policy_service] = get_policy_service_override
-component_router.dependency_overrides[get_component_service] = get_component_service_override
-transformer_router.dependency_overrides[get_transformer_service] = get_transformer_service_override
-ml_router.dependency_overrides[get_ml_model_service] = get_ml_model_service_override
-
-
 # Include routers
 app.include_router(policy_router, prefix="/api/v1")
 app.include_router(component_router, prefix="/api/v1")
 app.include_router(transformer_router, prefix="/api/v1")
 app.include_router(ml_router, prefix="/api/v1")
+
+
+# Set dependency overrides on the app (not on routers)
+app.dependency_overrides[get_policy_service] = get_policy_service_override
+app.dependency_overrides[get_component_service] = get_component_service_override
+app.dependency_overrides[get_transformer_service] = get_transformer_service_override
+app.dependency_overrides[get_ml_model_service] = get_ml_model_service_override
 
 
 # ==================== Main Entry Point ====================
