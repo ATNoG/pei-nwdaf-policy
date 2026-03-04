@@ -4,14 +4,21 @@ Policy Client - Main client class for components to interact with Policy Service
 import asyncio
 import json
 import logging
-from typing import Any, Optional
-from datetime import datetime
+from typing import Any, Callable, Coroutine
 
 import aiohttp
 
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
+
+# Type alias for field source - can be a list, URL string, or callable function
+FieldSource = (
+    list[str]  # Direct list of field names
+    | str  # URL to fetch fields from
+    | Callable[[], list[str]]  # Sync function returning field names
+    | Callable[[], Coroutine[None, None, list[str]]]  # Async function returning field names
+)
 
 
 class ProcessResult:
@@ -20,9 +27,9 @@ class ProcessResult:
     def __init__(
         self,
         allowed: bool,
-        data: Optional[dict[str, Any]] = None,
+        data: dict[str, Any] | None = None,
         reason: str = "",
-        transformations: list[str] = None
+        transformations: list[str] | None = None
     ):
         self.allowed = allowed
         self.data = data
@@ -42,6 +49,7 @@ class PolicyClient:
         self,
         service_url: str,
         component_id: str,
+        fields: FieldSource | None = None,
         cache_ttl: int = 60,
         cache_size: int = 1000,
         timeout: int = 5,
@@ -54,6 +62,10 @@ class PolicyClient:
         Args:
             service_url: URL of the Policy Service (e.g., "http://policy-service:8000")
             component_id: This component's ID
+            fields: Field source - can be:
+                - list[str]: Direct list of field names
+                - str: URL to fetch fields from (HTTP GET expected to return JSON with 'fields' key)
+                - Callable: Function that returns field names (sync or async)
             cache_ttl: Cache TTL in seconds
             cache_size: Maximum cache size
             timeout: Request timeout in seconds
@@ -65,20 +77,120 @@ class PolicyClient:
         self.timeout = timeout
         self.enable_policy = enable_policy
         self.fail_open = fail_open
+        self._fields_source = fields
 
         # Decision cache
         self.cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
+
+        # Cached field names
+        self._cached_fields: list[str] | None = None
 
         logger.info(
             f"PolicyClient initialized: service={service_url}, "
             f"component={component_id}, enabled={enable_policy}"
         )
 
+    async def _get_fields(self) -> list[str]:
+        """
+        Resolve field names from the configured source.
+
+        Returns:
+            List of field names
+        """
+        if self._cached_fields is not None:
+            return self._cached_fields
+
+        if self._fields_source is None:
+            return []
+
+        # Direct list
+        if isinstance(self._fields_source, list):
+            self._cached_fields = self._fields_source
+            return self._cached_fields
+
+        # URL string - fetch from endpoint
+        if isinstance(self._fields_source, str):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(self._fields_source, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                        # Support both direct list and nested 'fields' key
+                        if isinstance(data, list):
+                            self._cached_fields = data
+                        elif isinstance(data, dict) and "fields" in data:
+                            self._cached_fields = data["fields"]
+                        else:
+                            logger.warning(f"Unexpected response format from fields endpoint: {data}")
+                            self._cached_fields = []
+                        return self._cached_fields
+            except Exception as e:
+                logger.error(f"Failed to fetch fields from URL {self._fields_source}: {e}")
+                return []
+
+        # Callable - invoke and get fields
+        result = self._fields_source()
+        if asyncio.iscoroutine(result):
+            # Async callable
+            self._cached_fields = await result
+        else:
+            # Sync callable
+            self._cached_fields = result
+
+        return self._cached_fields
+
+    async def register_component(
+        self,
+        component_type: str,
+        role: str | None = None,
+        data_columns: list[str] | None = None,
+        auto_create_attributes: bool = True,
+        allowed_fields: dict[str, list[str]] | None = None
+    ) -> bool:
+        """
+        Register this component with the Policy Service.
+
+        Fields are automatically resolved from the configured source if data_columns is not provided.
+
+        Args:
+            component_type: Type of component
+            role: Optional role to assign
+            data_columns: Optional data columns (if not provided, uses resolved fields)
+            auto_create_attributes: Whether to auto-create attributes
+            allowed_fields: Optional allowed fields per sink
+
+        Returns:
+            True if successful
+        """
+        # Resolve fields if data_columns not provided
+        if data_columns is None:
+            data_columns = await self._get_fields()
+
+        try:
+            await self._request(
+                "POST",
+                "/api/v1/components",
+                {
+                    "component_id": self.component_id,
+                    "component_type": component_type,
+                    "role": role,
+                    "data_columns": data_columns,
+                    "auto_create_attributes": auto_create_attributes,
+                    "allowed_fields": allowed_fields
+                }
+            )
+            logger.info(f"Component registered: {self.component_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to register component: {e}")
+            return False
+
     async def _request(
         self,
         method: str,
         endpoint: str,
-        data: Optional[dict] = None
+        data: dict[str, Any] | None = None
     ) -> dict:
         """
         Make an HTTP request to the Policy Service.
@@ -230,47 +342,6 @@ class PolicyClient:
                     reason=f"Policy check failed: {e}"
                 )
 
-    async def register_component(
-        self,
-        component_type: str,
-        role: Optional[str] = None,
-        data_columns: Optional[list[str]] = None,
-        auto_create_attributes: bool = True,
-        allowed_fields: Optional[dict[str, list[str]]] = None
-    ) -> bool:
-        """
-        Register this component with the Policy Service.
-
-        Args:
-            component_type: Type of component
-            role: Optional role to assign
-            data_columns: Optional data columns for auto-attribute creation
-            auto_create_attributes: Whether to auto-create attributes
-            allowed_fields: Optional allowed fields per sink
-
-        Returns:
-            True if successful
-        """
-        try:
-            await self._request(
-                "POST",
-                "/api/v1/components",
-                {
-                    "component_id": self.component_id,
-                    "component_type": component_type,
-                    "role": role,
-                    "data_columns": data_columns,
-                    "auto_create_attributes": auto_create_attributes,
-                    "allowed_fields": allowed_fields
-                }
-            )
-            logger.info(f"Component registered: {self.component_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to register component: {e}")
-            return False
-
     async def register_ml_model(
         self,
         model_id: str,
@@ -354,10 +425,10 @@ class SyncPolicyClient:
     def register_component(
         self,
         component_type: str,
-        role: Optional[str] = None,
-        data_columns: Optional[list[str]] = None,
+        role: str | None = None,
+        data_columns: list[str] | None = None,
         auto_create_attributes: bool = True,
-        allowed_fields: Optional[dict[str, list[str]]] = None
+        allowed_fields: dict[str, list[str]] | None = None
     ) -> bool:
         """Synchronous version of register_component."""
         return asyncio.run(self._async_client.register_component(
