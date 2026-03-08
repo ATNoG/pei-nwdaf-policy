@@ -4,7 +4,6 @@ Transformer pipeline router - /api/v1/transformers/*
 IMPORTANT: Route order matters! More specific routes must be defined BEFORE
 catch-all routes like /{pipeline_id}.
 """
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from src.models.schemas import (
     TransformerPipelineConfig,
@@ -24,9 +23,6 @@ def get_transformer_service() -> TransformerService:
 
 router = APIRouter(prefix="/transformers", tags=["transformers"])
 
-# Data storage URL for field discovery
-DATA_STORAGE_URL = "http://data-storage:8000"
-
 
 # ==================== Field Discovery Endpoints ====================
 # NOTE: These MUST come first before /{pipeline_id} to avoid route conflicts
@@ -39,15 +35,15 @@ async def discover_fields(
     transformer_service: TransformerService = Depends(get_transformer_service)
 ) -> List[dict]:
     """
-    Discover available fields for a specific pipeline by querying Data Storage.
+    Discover available fields for a specific pipeline from registered component data.
 
     Args:
-        source: Source component name
-        sink: Sink component/resource name
+        source: Source component ID
+        sink: Sink component ID
         transformer_service: Transformer service instance
 
     Returns:
-        List of field info dictionaries with name, type, category
+        List of field info dictionaries with name and type
     """
     try:
         fields = await transformer_service.discover_fields(source, sink)

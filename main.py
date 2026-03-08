@@ -22,6 +22,7 @@ from src.services.component_service import ComponentService
 from src.services.transformer_service import TransformerService
 from src.services.ml_model_service import MLModelService
 from src.models.schemas import HealthResponse, ErrorResponse
+from src.models.enums import ComponentType
 
 # Configure logging
 logging.basicConfig(
@@ -70,7 +71,7 @@ async def lifespan(app: FastAPI):
     # Initialize services
     policy_service = PolicyService(policy_engine, config)
     component_service = ComponentService(policy_engine, permit_client, config)
-    transformer_service = TransformerService(policy_engine, config)
+    transformer_service = TransformerService(policy_engine, config, permit_client)
     ml_model_service = MLModelService(policy_engine)
 
     # Load transformer pipelines from file
@@ -79,6 +80,24 @@ async def lifespan(app: FastAPI):
         logger.info("Transformer pipelines loaded")
     except Exception as e:
         logger.warning(f"Failed to load transformer pipelines: {e}")
+
+    # Register Kafka as infrastructure component
+    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    try:
+        await component_service.register_component(
+            component_id="kafka",
+            component_type=ComponentType.INFRASTRUCTURE,
+            role="Messaging",
+            data_columns=[],  # No specific fields - wildcard
+            allowed_fields={
+                # Wildcard pattern - kafka can produce to ANY sink with any fields
+                "*": ["*"]
+            },
+            auto_create_attributes=False
+        )
+        logger.info(f"Kafka registered as infrastructure component: {kafka_bootstrap}")
+    except Exception as e:
+        logger.warning(f"Failed to register Kafka component: {e}")
 
     logger.info("Policy Service started successfully")
 

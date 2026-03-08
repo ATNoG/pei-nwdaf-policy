@@ -13,6 +13,7 @@ class ComponentType(str, Enum):
     ANALYTICS = "analytics"
     INGESTION = "ingestion"
     PROCESSOR = "processor"
+    INFRASTRUCTURE = "infrastructure"
 
 
 class ActionType(str, Enum):

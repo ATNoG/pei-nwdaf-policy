@@ -192,7 +192,7 @@ class PermitClient:
         self,
         resource_key: str,
         attribute_key: str,
-        attribute_type: str,
+        attribute_type: str = "string",
         description: Optional[str] = None,
     ) -> None:
         """
@@ -205,11 +205,17 @@ class PermitClient:
             description: Attribute description
         """
         try:
-            await self.api.resource_attributes.create(
-                resource_key=resource_key,
-                attribute_key=attribute_key,
+            from permit import ResourceAttributeCreate
+
+            attribute_data = ResourceAttributeCreate(
+                key=attribute_key,
                 type=attribute_type,
                 description=description or f"Attribute {attribute_key}",
+            )
+
+            await self.api.resource_attributes.create(
+                resource_key=resource_key,
+                attribute_data=attribute_data,
             )
         except Exception as e:
             # Ignore if already exists

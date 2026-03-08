@@ -47,7 +47,7 @@ class ComponentRegistrationRequest(BaseModel):
     component_id: str = Field(..., description="Unique component identifier")
     component_type: ComponentType = Field(..., description="Type of component")
     role: Optional[str] = Field(None, description="Role to assign")
-    data_columns: Optional[List[str]] = Field(None, description="Data columns for auto-attribute creation")
+    data_columns: Optional[List[str]] = Field(None, description="Data columns/field names for this component")
     auto_create_attributes: bool = Field(True, description="Auto-create attributes from columns")
     allowed_fields: Optional[Dict[str, List[str]]] = Field(None, description="Allowed fields per sink")
     attributes: Optional[Dict[str, Any]] = Field(None, description="Additional component attributes")

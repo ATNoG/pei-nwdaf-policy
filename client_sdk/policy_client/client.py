@@ -82,8 +82,8 @@ class PolicyClient:
         # Decision cache
         self.cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
 
-        # Cached field names
-        self._cached_fields: list[str] | None = None
+        # Field cache key for callable sources
+        self._fields_cache_key = f"{self.component_id}:fields"
 
         logger.info(
             f"PolicyClient initialized: service={service_url}, "
@@ -94,19 +94,24 @@ class PolicyClient:
         """
         Resolve field names from the configured source.
 
+        For callable sources, uses TTL cache to allow fields to be refreshed
+        as the underlying data changes.
+
         Returns:
             List of field names
         """
-        if self._cached_fields is not None:
-            return self._cached_fields
-
         if self._fields_source is None:
             return []
 
-        # Direct list
+        # Direct list - no caching needed (static)
         if isinstance(self._fields_source, list):
-            self._cached_fields = self._fields_source
-            return self._cached_fields
+            return self._fields_source
+
+        # Check TTL cache for callable sources (URLs and functions)
+        # This allows fields to be refreshed when the cache expires
+        cached_fields = self.cache.get(self._fields_cache_key)
+        if cached_fields is not None:
+            return cached_fields
 
         # URL string - fetch from endpoint
         if isinstance(self._fields_source, str):
@@ -117,13 +122,16 @@ class PolicyClient:
                         data = await response.json()
                         # Support both direct list and nested 'fields' key
                         if isinstance(data, list):
-                            self._cached_fields = data
+                            fields = data
                         elif isinstance(data, dict) and "fields" in data:
-                            self._cached_fields = data["fields"]
+                            fields = data["fields"]
                         else:
                             logger.warning(f"Unexpected response format from fields endpoint: {data}")
-                            self._cached_fields = []
-                        return self._cached_fields
+                            fields = []
+
+                        # Cache the result
+                        self.cache[self._fields_cache_key] = fields
+                        return fields
             except Exception as e:
                 logger.error(f"Failed to fetch fields from URL {self._fields_source}: {e}")
                 return []
@@ -132,12 +140,14 @@ class PolicyClient:
         result = self._fields_source()
         if asyncio.iscoroutine(result):
             # Async callable
-            self._cached_fields = await result
+            fields = await result
         else:
             # Sync callable
-            self._cached_fields = result
+            fields = result
 
-        return self._cached_fields
+        # Cache the result with TTL
+        self.cache[self._fields_cache_key] = fields
+        return fields
 
     async def register_component(
         self,

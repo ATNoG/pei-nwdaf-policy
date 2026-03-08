@@ -57,12 +57,18 @@ class ComponentService:
             ComponentConfig of registered component
         """
         logger.info(f"ComponentService: Registering component {component_id} of type {component_type}")
+
+        # Build attributes, including data_columns for field discovery
+        component_attributes = attributes or {}
+        if data_columns:
+            component_attributes["data_columns"] = data_columns
+
         config = ComponentConfig(
             component_id=component_id,
             component_type=component_type,
             role=role,
             allowed_fields=allowed_fields or {},
-            attributes=attributes or {}
+            attributes=component_attributes
         )
 
         # Register in policy engine

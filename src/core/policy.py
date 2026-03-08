@@ -236,30 +236,61 @@ class PolicyEngine:
         action: str = "read"
     ) -> AccessDecision:
         """
-        Check if source component is authorized to access sink.
+        Check if source is authorized to send data to sink.
+
+        The policy check supports two scenarios:
+        1. Infrastructure sources (e.g., Kafka) - not registered, check sink permissions only
+        2. Component sources (e.g., Ingestion-Service) - registered, check if they can send to sink
 
         Args:
             source_id: Source component ID
-            sink_id: Sink component ID
+            sink_id: Sink component ID (e.g., "data-storage:influx")
             data_type: Type of data being accessed
             action: Action type (read, write, inference, etc.)
 
         Returns:
             AccessDecision with allowed status and reason
         """
-        try:
-            # Check if source component exists (if registration required)
-            if self.config.REQUIRE_REGISTRATION:
-                if source_id not in self.components:
-                    raise ComponentNotFoundError(source_id)
+        # Extract the component_id from sink_id (e.g., "data-storage" from "data-storage:influx")
+        # This is the actual registered user in Permit.io
+        sink_component = sink_id.split(":")[0] if ":" in sink_id else sink_id
 
+        try:
+            # Check if sink component exists (if registration required)
+            if self.config.REQUIRE_REGISTRATION:
+                if sink_component not in self.components:
+                    raise ComponentNotFoundError(sink_component)
+
+            # Determine which user to check:
+            # - If source is a registered component, check if source can send to sink
+            # - If source is not registered (e.g., infrastructure like Kafka), check sink permissions
+            user_to_check = source_id
+            check_sink_permissions = False
+
+            if source_id not in self.components:
+                # Source is not a registered component (e.g., Kafka)
+                # Fall back to checking if the sink has permission to perform the action
+                user_to_check = sink_component
+                check_sink_permissions = True
+
+            # Perform the policy check
             permitted = await self.permit.check(
-                user=source_id,
+                user=user_to_check,
                 action=action,
-                resource={"type": data_type, "id": sink_id}
+                resource={"type": data_type, "id": sink_id},
+                context={
+                    "source_component": source_id,
+                    "sink_component": sink_component,
+                    "check_sink_permissions": check_sink_permissions
+                }
             )
 
             if not permitted:
+                if check_sink_permissions:
+                    return AccessDecision(
+                        allowed=False,
+                        reason=f"Authorization denied: {sink_component} not allowed to {action} {sink_id}"
+                    )
                 return AccessDecision(
                     allowed=False,
                     reason=f"Authorization denied: {source_id} not allowed to {action} {sink_id}"
@@ -273,7 +304,7 @@ class PolicyEngine:
         except ComponentNotFoundError:
             return AccessDecision(
                 allowed=False,
-                reason=f"Component not found: {source_id}. Register component first."
+                reason=f"Component not found: {sink_component}. Register component first."
             )
         except Exception as e:
             # Fail-open for production safety
