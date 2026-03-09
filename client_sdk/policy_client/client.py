@@ -16,6 +16,50 @@ from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
+
+async def retry_with_backoff(
+    coro,
+    max_retries: int = 5,
+    initial_delay: float = 1.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0
+):
+    """
+    Retry a coroutine with exponential backoff.
+
+    Args:
+        coro: The coroutine to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay between retries
+        backoff_factor: Multiplier for delay after each retry
+
+    Returns:
+        The result of the coroutine
+
+    Raises:
+        The last exception if all retries fail
+    """
+    last_exception = None
+    delay = initial_delay
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                logger.warning(
+                    f"Request failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(min(delay, max_delay))
+                delay *= backoff_factor
+            else:
+                logger.error(f"Request failed after {max_retries + 1} attempts: {e}")
+
+    raise last_exception
+
 # Type alias for field source - can be a list, URL string, or callable function
 FieldSource = (
     list[str]  # Direct list of field names
@@ -165,6 +209,7 @@ class PolicyClient:
         Register this component with the Policy Service.
 
         Fields are automatically resolved from the configured source if data_columns is not provided.
+        Uses exponential backoff retry to handle temporary failures like Policy Service restarts.
 
         Args:
             component_type: Type of component
@@ -180,7 +225,7 @@ class PolicyClient:
         if data_columns is None:
             data_columns = await self._get_fields()
 
-        try:
+        async def _do_register():
             await self._request(
                 "POST",
                 "/api/v1/components",
@@ -193,11 +238,14 @@ class PolicyClient:
                     "allowed_fields": allowed_fields
                 }
             )
+
+        try:
+            await retry_with_backoff(_do_register())
             logger.info(f"Component registered: {self.component_id}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to register component: {e}")
+            logger.error(f"Failed to register component after retries: {e}")
             return False
 
     async def _request(
