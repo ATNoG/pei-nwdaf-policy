@@ -1,5 +1,9 @@
 """
 Policy Client - Main client class for components to interact with Policy Service.
+
+This client now supports local data transformation. Instead of sending data to the
+policy service for transformation, it fetches the transformation pipeline configuration
+and applies transformations locally. This improves privacy, performance, and scalability.
 """
 import asyncio
 import json
@@ -292,7 +296,10 @@ class PolicyClient:
         action: str = "read"
     ) -> ProcessResult:
         """
-        Check policy and transform data in one call.
+        Check policy and transform data locally.
+
+        Fetches pipeline configuration, checks authorization via Permit.io
+        (no data sent), and applies transformations locally.
 
         Args:
             source_id: Source component ID
@@ -310,47 +317,73 @@ class PolicyClient:
                 reason="Policy disabled"
             )
 
-        # Check cache
-        data_hash = hash(json.dumps(data, sort_keys=True))
-        cache_key = self._generate_cache_key("process", source_id, sink_id, data_hash)
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+        # Check authorization (no data sent to server)
+        allowed = await self.check_access(source_id, sink_id, action=action)
+        if not allowed:
+            return ProcessResult(
+                allowed=False,
+                reason="Authorization denied"
+            )
 
+        # Get pipeline configuration (cached)
         try:
-            response = await self._request(
-                "POST",
-                "/api/v1/policy/process",
-                {
-                    "source_id": source_id,
-                    "sink_id": sink_id,
-                    "data": data,
-                    "action": action
-                }
-            )
-
-            result = ProcessResult(
-                allowed=response.get("allowed", False),
-                data=response.get("data"),
-                reason=response.get("reason", ""),
-                transformations=response.get("transformations_applied", [])
-            )
-
-            self.cache[cache_key] = result
-            return result
-
+            pipeline_config = await self._get_pipeline_config(source_id, sink_id)
         except Exception as e:
-            logger.warning(f"Policy processing failed: {e}")
-            if self.fail_open:
-                return ProcessResult(
-                    allowed=True,
-                    data=data,
-                    reason=f"Policy check failed, allowing through: {e}"
-                )
-            else:
+            logger.warning(f"Failed to get pipeline config: {e}")
+            # If we can't get config but auth passed, return data as-is
+            return ProcessResult(
+                allowed=True,
+                data=data,
+                reason=f"Pipeline config unavailable, using raw data: {e}"
+            )
+
+        # Apply transformations locally
+        if pipeline_config.get("steps"):
+            try:
+                transformed_data = self._apply_pipeline(data, pipeline_config)
+                transformations = [s["type"] for s in pipeline_config["steps"]]
+            except Exception as e:
+                logger.error(f"Failed to apply pipeline: {e}")
+                if self.fail_open:
+                    return ProcessResult(
+                        allowed=True,
+                        data=data,
+                        reason=f"Pipeline application failed, using raw data: {e}"
+                    )
                 return ProcessResult(
                     allowed=False,
-                    reason=f"Policy check failed: {e}"
+                    reason=f"Pipeline application failed: {e}"
                 )
+        else:
+            transformed_data = data
+            transformations = []
+
+        return ProcessResult(
+            allowed=True,
+            data=transformed_data,
+            reason="Data processed locally",
+            transformations=transformations
+        )
+
+    async def _get_pipeline_config(self, source_id: str, sink_id: str) -> dict:
+        """Fetch and cache pipeline configuration."""
+        cache_key = f"pipeline:{source_id}:{sink_id}"
+        if cached := self.cache.get(cache_key):
+            return cached
+
+        response = await self._request(
+            "GET",
+            f"/api/v1/transformers/pipelines/{source_id}/{sink_id}"
+        )
+        self.cache[cache_key] = response
+        return response
+
+    def _apply_pipeline(self, data: dict, pipeline_config: dict) -> dict:
+        """Apply transformations locally using the transformer pipeline."""
+        from policy_client.transformers import TransformerPipeline
+
+        pipeline = TransformerPipeline.from_config(pipeline_config)
+        return pipeline.execute_sync(data)
 
     async def register_ml_model(
         self,

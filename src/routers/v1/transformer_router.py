@@ -28,6 +28,41 @@ router = APIRouter(prefix="/transformers", tags=["transformers"])
 # NOTE: These MUST come first before /{pipeline_id} to avoid route conflicts
 # since /fields/{source}/{sink} would otherwise match /{pipeline_id} with pipeline_id="fields"
 
+@router.get("/pipelines/{source_id}/{sink_id}", response_model=Dict[str, Any])
+async def get_pipeline_config(
+    source_id: str,
+    sink_id: str,
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Get pipeline configuration for client-side processing.
+
+    Returns the transformation steps that should be applied
+    without actually processing any data. This allows clients
+    to perform transformations locally.
+
+    Args:
+        source_id: Source component ID
+        sink_id: Sink component ID
+        transformer_service: Transformer service instance
+
+    Returns:
+        Pipeline configuration with pipeline_id and steps
+    """
+    pipeline_id = f"{source_id}_to_{sink_id}"
+    pipeline = await transformer_service.get_pipeline(pipeline_id)
+
+    if pipeline:
+        config = pipeline.to_config()
+        return {
+            "pipeline_id": pipeline_id,
+            "steps": config.get("steps", [])
+        }
+    return {
+        "pipeline_id": pipeline_id,
+        "steps": []
+    }
+
 @router.get("/fields/{source}/{sink}", response_model=List[dict])
 async def discover_fields(
     source: str,
