@@ -436,10 +436,29 @@ class PolicyClient:
 class SyncPolicyClient:
     """
     Synchronous wrapper for PolicyClient for non-async contexts.
+
+    This wrapper works both inside and outside of running event loops:
+    - Outside a running loop: uses asyncio.run() to create a new loop
+    - Inside a running loop: submits the task and waits for it with run_coroutine_threadsafe
     """
 
     def __init__(self, async_client: PolicyClient):
         self._async_client = async_client
+        self._loop = None
+
+    def _run_coroutine(self, coro):
+        """Run a coroutine, handling both cases: with or without a running event loop."""
+        try:
+            # Try to get the running loop
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, use asyncio.run()
+            return asyncio.run(coro)
+
+        # We're inside a running loop, use run_coroutine_threadsafe and wait
+        import concurrent.futures
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
 
     def check_access(
         self,
@@ -449,7 +468,7 @@ class SyncPolicyClient:
         action: str = "read"
     ) -> bool:
         """Synchronous version of check_access."""
-        return asyncio.run(self._async_client.check_access(
+        return self._run_coroutine(self._async_client.check_access(
             source_id, sink_id, resource, action
         ))
 
@@ -461,7 +480,7 @@ class SyncPolicyClient:
         action: str = "read"
     ) -> ProcessResult:
         """Synchronous version of process_data."""
-        return asyncio.run(self._async_client.process_data(
+        return self._run_coroutine(self._async_client.process_data(
             source_id, sink_id, data, action
         ))
 
@@ -474,7 +493,7 @@ class SyncPolicyClient:
         allowed_fields: dict[str, list[str]] | None = None
     ) -> bool:
         """Synchronous version of register_component."""
-        return asyncio.run(self._async_client.register_component(
+        return self._run_coroutine(self._async_client.register_component(
             component_type, role, data_columns, auto_create_attributes, allowed_fields
         ))
 
