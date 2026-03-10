@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 async def retry_with_backoff(
-    coro,
+    coro_func,
     max_retries: int = 5,
     initial_delay: float = 1.0,
     max_delay: float = 60.0,
@@ -28,7 +28,7 @@ async def retry_with_backoff(
     Retry a coroutine with exponential backoff.
 
     Args:
-        coro: The coroutine to retry
+        coro_func: A callable that returns a coroutine (function, not coroutine object)
         max_retries: Maximum number of retry attempts
         initial_delay: Initial delay in seconds
         max_delay: Maximum delay between retries
@@ -45,6 +45,8 @@ async def retry_with_backoff(
 
     for attempt in range(max_retries + 1):
         try:
+            # Create a new coroutine on each attempt by calling the function
+            coro = coro_func()
             return await coro
         except Exception as e:
             last_exception = e
@@ -240,7 +242,7 @@ class PolicyClient:
             )
 
         try:
-            await retry_with_backoff(_do_register())
+            await retry_with_backoff(_do_register)
             logger.info(f"Component registered: {self.component_id}")
             return True
 
@@ -503,10 +505,22 @@ class SyncPolicyClient:
             # No running loop, use asyncio.run()
             return asyncio.run(coro)
 
-        # We're inside a running loop, use run_coroutine_threadsafe and wait
+        # We're inside a running loop - run in separate thread with own event loop
         import concurrent.futures
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
+
+        def run_in_thread():
+            """Run async code in a new thread with its own event loop."""
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+
+        # Use ThreadPoolExecutor to run in background thread
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_in_thread)
+            return future.result(timeout=self._async_client.timeout)
 
     def check_access(
         self,
