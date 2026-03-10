@@ -19,7 +19,7 @@ class SubstitutionTransformer(BaseTransformer):
         """
         self.substitutions = substitutions
 
-    async def transform(self, data: dict[str, Any]) -> dict[str, Any]:
+    def transform(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Apply value substitutions to data.
 

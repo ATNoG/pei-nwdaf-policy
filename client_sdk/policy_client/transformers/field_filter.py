@@ -25,7 +25,7 @@ class FieldFilterTransformer(BaseTransformer):
         self.mode = mode
         self.fields = set(fields)
 
-    async def transform(self, data: dict[str, Any]) -> dict[str, Any]:
+    def transform(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Apply field filtering to data.
 

@@ -21,7 +21,7 @@ class RedactionTransformer(BaseTransformer):
         self.fields = set(fields)
         self.replacement = replacement
 
-    async def transform(self, data: dict[str, Any]) -> dict[str, Any]:
+    def transform(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Apply redaction to specified fields.
 

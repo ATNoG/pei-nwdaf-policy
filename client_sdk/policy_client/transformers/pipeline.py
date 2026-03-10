@@ -100,7 +100,7 @@ class TransformerPipeline:
         self.transformers.append(transformer)
         return self
 
-    async def execute(self, data: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Execute all transformers in sequence.
 
@@ -112,12 +112,12 @@ class TransformerPipeline:
         """
         result = data
         for transformer in self.transformers:
-            result = await transformer.transform(result)
+            result = transformer.transform(result)
         return result
 
     def execute_sync(self, data: dict[str, Any]) -> dict[str, Any]:
         """
-        Synchronous version of execute.
+        Synchronous version of execute (now just calls execute directly).
 
         Args:
             data: Input data dictionary
@@ -125,16 +125,7 @@ class TransformerPipeline:
         Returns:
             Transformed data dictionary
         """
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            # Already in async context - create task and run it
-            import concurrent.futures
-            future = asyncio.ensure_future(self.execute(data))
-            return loop.run_until_complete(future)
-        except RuntimeError:
-            # No running event loop - create a new one
-            return asyncio.run(self.execute(data))
+        return self.execute(data)
 
     def clear(self) -> None:
         """Clear all transformers from the pipeline."""

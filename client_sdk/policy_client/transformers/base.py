@@ -11,7 +11,7 @@ class BaseTransformer(ABC):
     """
 
     @abstractmethod
-    async def transform(self, data: dict[str, Any]) -> dict[str, Any]:
+    def transform(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Transform the input data.
 

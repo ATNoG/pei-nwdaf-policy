@@ -22,7 +22,7 @@ class HashingTransformer(BaseTransformer):
         self.fields = set(fields)
         self.salt = salt.encode() if salt else b""
 
-    async def transform(self, data: dict[str, Any]) -> dict[str, Any]:
+    def transform(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Apply SHA-256 hashing to specified fields.
 
