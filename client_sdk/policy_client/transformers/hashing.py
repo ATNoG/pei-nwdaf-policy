@@ -3,7 +3,7 @@ Hashing transformer - SHA-256 hashing of sensitive values.
 """
 import hashlib
 from typing import Any
-from src.transformers.base import BaseTransformer
+from policy_client.transformers.base import BaseTransformer
 
 
 class HashingTransformer(BaseTransformer):

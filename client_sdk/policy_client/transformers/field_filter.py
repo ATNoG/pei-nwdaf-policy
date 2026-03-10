@@ -2,7 +2,7 @@
 Field filtering transformer - whitelist/blacklist field filtering.
 """
 from typing import Any, Literal
-from src.transformers.base import BaseTransformer
+from policy_client.transformers.base import BaseTransformer
 
 
 class FieldFilterTransformer(BaseTransformer):

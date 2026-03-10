@@ -2,7 +2,7 @@
 Redaction transformer - replaces sensitive values with placeholder.
 """
 from typing import Any
-from src.transformers.base import BaseTransformer
+from policy_client.transformers.base import BaseTransformer
 
 
 class RedactionTransformer(BaseTransformer):
