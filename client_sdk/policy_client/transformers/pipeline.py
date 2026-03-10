@@ -126,7 +126,15 @@ class TransformerPipeline:
             Transformed data dictionary
         """
         import asyncio
-        return asyncio.run(self.execute(data))
+        try:
+            loop = asyncio.get_running_loop()
+            # Already in async context - create task and run it
+            import concurrent.futures
+            future = asyncio.ensure_future(self.execute(data))
+            return loop.run_until_complete(future)
+        except RuntimeError:
+            # No running event loop - create a new one
+            return asyncio.run(self.execute(data))
 
     def clear(self) -> None:
         """Clear all transformers from the pipeline."""
