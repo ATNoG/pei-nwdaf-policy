@@ -4,7 +4,6 @@ Transformer pipeline router - /api/v1/transformers/*
 IMPORTANT: Route order matters! More specific routes must be defined BEFORE
 catch-all routes like /{pipeline_id}.
 """
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from src.models.schemas import (
     TransformerPipelineConfig,
@@ -24,13 +23,45 @@ def get_transformer_service() -> TransformerService:
 
 router = APIRouter(prefix="/transformers", tags=["transformers"])
 
-# Data storage URL for field discovery
-DATA_STORAGE_URL = "http://data-storage:8000"
-
 
 # ==================== Field Discovery Endpoints ====================
 # NOTE: These MUST come first before /{pipeline_id} to avoid route conflicts
 # since /fields/{source}/{sink} would otherwise match /{pipeline_id} with pipeline_id="fields"
+
+@router.get("/pipelines/{source_id}/{sink_id}", response_model=Dict[str, Any])
+async def get_pipeline_config(
+    source_id: str,
+    sink_id: str,
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Get pipeline configuration for client-side processing.
+
+    Returns the transformation steps that should be applied
+    without actually processing any data. This allows clients
+    to perform transformations locally.
+
+    Args:
+        source_id: Source component ID
+        sink_id: Sink component ID
+        transformer_service: Transformer service instance
+
+    Returns:
+        Pipeline configuration with pipeline_id and steps
+    """
+    pipeline_id = f"{source_id}_to_{sink_id}"
+    pipeline = await transformer_service.get_pipeline(pipeline_id)
+
+    if pipeline:
+        config = pipeline.to_config()
+        return {
+            "pipeline_id": pipeline_id,
+            "steps": config.get("steps", [])
+        }
+    return {
+        "pipeline_id": pipeline_id,
+        "steps": []
+    }
 
 @router.get("/fields/{source}/{sink}", response_model=List[dict])
 async def discover_fields(
@@ -39,15 +70,15 @@ async def discover_fields(
     transformer_service: TransformerService = Depends(get_transformer_service)
 ) -> List[dict]:
     """
-    Discover available fields for a specific pipeline by querying Data Storage.
+    Discover available fields for a specific pipeline from registered component data.
 
     Args:
-        source: Source component name
-        sink: Sink component/resource name
+        source: Source component ID
+        sink: Sink component ID
         transformer_service: Transformer service instance
 
     Returns:
-        List of field info dictionaries with name, type, category
+        List of field info dictionaries with name and type
     """
     try:
         fields = await transformer_service.discover_fields(source, sink)
@@ -98,6 +129,29 @@ async def list_discovered_fields(
         Dictionary with pipeline_id -> list of field info
     """
     return await transformer_service.list_discovered_fields()
+
+
+@router.post("/fields/cache/clear", response_model=Dict[str, Any])
+async def clear_field_cache(
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Clear the field discovery cache.
+
+    This forces a refresh of field discovery on the next request.
+    Useful after components have dynamically discovered new fields.
+
+    Returns:
+        Status message indicating cache was cleared
+    """
+    cleared_count = len(transformer_service._field_cache)
+    transformer_service._field_cache.clear()
+
+    return {
+        "status": "success",
+        "message": f"Cleared {cleared_count} cached field discoveries",
+        "cleared_count": cleared_count
+    }
 
 
 # ==================== Pipeline CRUD Endpoints ====================

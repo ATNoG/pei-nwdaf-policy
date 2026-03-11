@@ -29,6 +29,9 @@ class PolicyConfig(BaseSettings):
     # Transformer configuration
     TRANSFORMER_CONFIG_PATH: str = "./configs/transformers.json"
 
+    # Component registration persistence
+    COMPONENT_CONFIG_PATH: str = "./configs/components.json"
+
     # API Configuration
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000

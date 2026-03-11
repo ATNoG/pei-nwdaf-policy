@@ -2,41 +2,17 @@
 Transformer pipeline management service.
 """
 import json
-import httpx
 import logging
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from src.transformers.pipeline import TransformerPipeline
-from src.core.policy import PolicyEngine
+from src.core.policy import PolicyEngine, ComponentConfig
 from src.core.config import PolicyConfig
 from src.core.exceptions import TransformerNotFoundError, InvalidConfigurationError
 from src.permit.permit_client import PermitClient
 
 
 logger = logging.getLogger(__name__)
-
-# Field categories for UI grouping
-FIELD_CATEGORIES = {
-    "location": [
-        "latitude", "longitude", "altitude", "location_accuracy",
-        "velocity", "velocity_accuracy", "bearing", "bearing_accuracy"
-    ],
-    "signal": [
-        "rsrp", "rsrq", "rssi", "sinr", "ta", "cqi",
-        "ss_rsrp", "ss_rsrq", "ss_sinr"
-    ],
-    "network": [
-        "network", "mcc", "mnc", "earfcn", "cell_index",
-        "physical_cellid", "tracking_area_code", "primary_bandwidth",
-        "ul_bandwidth", "cellbandwidths"
-    ],
-    "latency": [
-        "mean_latency", "min_latency", "max_latency", "mean_dev_latency"
-    ],
-    "other": [
-        "packet_loss", "no_pings", "server_ip", "device", "MNO", "timestamp"
-    ]
-}
 
 
 class TransformerService:
@@ -56,19 +32,10 @@ class TransformerService:
         self.policy_engine = policy_engine
         self.config = config
         self.config_path = Path(config.TRANSFORMER_CONFIG_PATH)
-        self.permit_client = permit_client
-        self.data_storage_url = "http://data-storage:8000"
+        self._permit_client = permit_client
 
-        # Cache for discovered fields
+        # Cache for discovered fields (keyed by pipeline_key or component_id)
         self._field_cache: Dict[str, List[dict]] = {}
-        self._permit_client: Optional[PermitClient] = None
-
-    @property
-    def permit_client(self) -> Optional[PermitClient]:
-        """Get permit client, initializing if needed."""
-        if self._permit_client is None and self.permit_client:
-            self._permit_client = self.permit_client
-        return self._permit_client
 
     async def create_pipeline(
         self,
@@ -190,150 +157,225 @@ class TransformerService:
 
     # ==================== Field Discovery Methods ====================
 
-    async def discover_fields(self, source: str, sink: str) -> List[dict]:
+    async def get_component_fields(self, component_id: str) -> List[dict]:
         """
-        Discover available fields for a pipeline by querying Data Storage.
+        Get all fields from a component's registration.
 
         Args:
-            source: Source component name
-            sink: Sink component/resource name
+            component_id: Component ID
 
         Returns:
-            List of field info dicts: {name, type, category, description}
+            List of field info dicts with 'name' and 'type'
+        """
+        # Check cache first
+        if component_id in self._field_cache:
+            logger.info(f"Returning cached fields for {component_id}")
+            return self._field_cache[component_id]
+
+        # Get component from policy engine
+        component_config: Optional[ComponentConfig] = self.policy_engine.get_component(component_id)
+        if not component_config:
+            logger.warning(f"Component {component_id} not found in registry")
+            return []
+
+        # Collect all fields from the component's registration
+        field_list = []
+
+        # 1. Get data_columns from attributes (set during registration)
+        field_list.extend(component_config.attributes.get("data_columns", []))
+
+        # 2. For ML models, include input_fields and output_fields
+        if component_config.component_type in ("ml_agent", "ml_model"):
+            input_fields = component_config.attributes.get("input_fields", [])
+            output_fields = component_config.attributes.get("output_fields", [])
+            field_list.extend(input_fields)
+            field_list.extend(output_fields)
+
+        # 3. Include all fields from allowed_fields (for any sink)
+        for sink_fields in component_config.allowed_fields.values():
+            field_list.extend(sink_fields)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_fields = []
+        for f in field_list:
+            if f not in seen:
+                seen.add(f)
+                unique_fields.append(f)
+
+        # Build simple field info objects
+        fields = [{"name": field_name, "type": "string"} for field_name in unique_fields]
+
+        # Cache the results
+        self._field_cache[component_id] = fields
+
+        logger.info(f"Retrieved {len(fields)} fields for component {component_id}")
+        return fields
+
+    def invalidate_cache_for_component(self, component_id: str) -> int:
+        """
+        Invalidate all cached field discoveries that involve a given component.
+
+        Called when a component re-registers so stale results are evicted.
+
+        Args:
+            component_id: The component whose cache entries should be purged.
+
+        Returns:
+            Number of cache entries removed.
+        """
+        # Remove pipeline-keyed entries where the component appears as source or sink
+        # Pipeline keys look like "source_to_sink"
+        keys_to_remove = [
+            k for k in self._field_cache
+            if k == component_id  # component-level cache
+            or k.startswith(f"{component_id}_to_")  # component is source
+            or f"_to_{component_id}" in k  # component is sink (or sink:resource)
+        ]
+        for k in keys_to_remove:
+            del self._field_cache[k]
+
+        if keys_to_remove:
+            logger.info(f"Invalidated {len(keys_to_remove)} cached field entries for component {component_id}: {keys_to_remove}")
+        return len(keys_to_remove)
+
+    async def discover_fields(self, source: str, sink: str) -> List[dict]:
+        """
+        Discover available fields for a pipeline from registered component data.
+
+        Args:
+            source: Source component ID (may include resource type like "data-storage:influx")
+            sink: Sink component ID (may include resource type like "data-storage:clickhouse")
+
+        Returns:
+            List of field info dicts with 'name', 'type', and optionally 'category'
         """
         pipeline_key = f"{source}_to_{sink}"
 
-        # Check cache first
+        # Check cache first — but only return cached results when they are non-empty.
+        # Empty results are NOT cached because they typically indicate a timing issue
+        # (component registered before data arrived) and would mask later updates.
         if pipeline_key in self._field_cache:
-            logger.info(f"Returning cached fields for {pipeline_key}")
-            return self._field_cache[pipeline_key]
+            cached = self._field_cache[pipeline_key]
+            if cached:  # only return if non-empty
+                logger.info(f"Returning cached fields for {pipeline_key} ({len(cached)} fields)")
+                return cached
+            else:
+                # Evict stale empty entry so we re-evaluate
+                logger.info(f"Evicting stale empty cache for {pipeline_key}")
+                del self._field_cache[pipeline_key]
 
-        try:
-            # Query Data Storage for schema
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.data_storage_url}/api/v1/processed/example"
-                )
-                response.raise_for_status()
+        # Parse source component and resource type
+        # Format: "component_id" or "component_id:resourceType"
+        source_component_id = source.split(":")[0] if ":" in source else source
+        source_resource_type = source.split(":", 1)[1] if ":" in source else None
 
-                data = response.json()
+        # Get source component from policy engine
+        source_config: Optional[ComponentConfig] = self.policy_engine.get_component(source_component_id)
+        if not source_config:
+            logger.warning(f"Source component {source_component_id} not found in registry")
+            return []
 
-                # Extract fields from the example data
-                fields = self._extract_fields_from_data(data)
+        # Collect fields from the component's registration
+        fields_with_category = []
 
-                # Cache the results
-                self._field_cache[pipeline_key] = fields
+        logger.info(f"Field discovery for {pipeline_key}: source_component_id={source_component_id}, source_resource_type={source_resource_type}")
+        logger.info(f"Source allowed_fields keys: {list(source_config.allowed_fields.keys())}")
 
-                logger.info(f"Discovered {len(fields)} fields for {pipeline_key}")
-                return fields
+        # 1. If source has a resource type, look for fields in allowed_fields under that specific key
+        if source_resource_type:
+            source_key = f"{source_component_id}:{source_resource_type}"
+            if source_key in source_config.allowed_fields:
+                # Use the fields specific to this resource type
+                category = source_resource_type
+                for field_name in source_config.allowed_fields[source_key]:
+                    fields_with_category.append({"name": field_name, "type": "string", "category": category})
+            else:
+                # Resource type specified but not found - fall back to data_columns
+                logger.warning(f"Resource type {source_key} not found in allowed_fields, using data_columns")
+                for field_name in source_config.attributes.get("data_columns", []):
+                    fields_with_category.append({"name": field_name, "type": "string"})
+        # 2. Check if component has fields in its allowed_fields for this specific sink
+        #    (moved BEFORE wildcard so explicit sink mappings take priority)
+        elif sink in source_config.allowed_fields:
+            logger.info(f"Found sink '{sink}' in allowed_fields")
+            # Extract category from sink key (e.g., "data-storage:influx" -> "influx")
+            if ":" in sink:
+                category = sink.split(":", 1)[1]
+            else:
+                category = sink
+            for field_name in source_config.allowed_fields[sink]:
+                fields_with_category.append({"name": field_name, "type": "string", "category": category})
+        # 3. Check for wildcard pattern {"*": [...]} - means any sink, all fields
+        #    (moved AFTER direct sink match so explicit mappings are preferred)
+        elif "*" in source_config.allowed_fields:
+            logger.info(f"Found wildcard pattern in allowed_fields")
+            # Use the source's own wildcard fields first; only fall back to
+            # sink data_columns when the wildcard value is the sentinel ["*"].
+            wildcard_fields = source_config.allowed_fields["*"]
+            if wildcard_fields and wildcard_fields != ["*"]:
+                for field_name in wildcard_fields:
+                    fields_with_category.append({"name": field_name, "type": "string"})
+            else:
+                # Sentinel wildcard — return the sink's data_columns as available fields
+                sink_component_id = sink.split(":")[0] if ":" in sink else sink
+                sink_config = self.policy_engine.get_component(sink_component_id)
+                if sink_config and sink_config.attributes.get("data_columns"):
+                    for field_name in sink_config.attributes["data_columns"]:
+                        fields_with_category.append({"name": field_name, "type": "string"})
+        # 4. Collect fields from all component-specific keys in allowed_fields
+        # (e.g., "ingestion-service:producer1", "ingestion-service:label1", etc.)
+        # This handles dynamic field discovery where fields are registered under sub-categories
+        elif source_config.allowed_fields:
+            component_prefix = f"{source_component_id}:"
+            logger.info(f"No direct match found, checking for component-specific keys with prefix '{component_prefix}'")
+            matching_keys = [k for k in source_config.allowed_fields.keys() if k.startswith(component_prefix)]
+            if matching_keys:
+                # Collect all fields from all matching keys, using the suffix as category
+                seen = set()
+                for key in matching_keys:
+                    category = key.split(":", 1)[1] if ":" in key else "default"
+                    for field_name in source_config.allowed_fields[key]:
+                        if field_name not in seen:
+                            seen.add(field_name)
+                            fields_with_category.append({"name": field_name, "type": "string", "category": category})
+                logger.info(f"Collected {len(fields_with_category)} fields from {len(matching_keys)} keys with prefix {component_prefix}")
 
-        except httpx.HTTPError as e:
-            logger.error(f"Failed to discover fields from Data Storage: {e}")
-            # Return default known fields if discovery fails
-            return self._get_default_fields()
-
-        except Exception as e:
-            logger.error(f"Error during field discovery: {e}")
-            return self._get_default_fields()
-
-    def _extract_fields_from_data(self, data: dict) -> List[dict]:
-        """
-        Extract field information from example data.
-
-        Args:
-            data: Example data from Data Storage
-
-        Returns:
-            List of field info dicts
-        """
-        fields = []
-
-        # Handle different data structures
-        if isinstance(data, list) and len(data) > 0:
-            sample_record = data[0]
-        elif isinstance(data, dict):
-            # Look for common keys that might contain data
-            sample_record = data
+            # BUG FIX: If matching keys existed but all had empty field lists (component
+            # registered before data arrived), fall back to data_columns so we still
+            # surface whatever the component declared at registration time.
+            if not fields_with_category:
+                logger.info(f"allowed_fields keys matched but yielded 0 fields, falling back to data_columns")
+                for field_name in source_config.attributes.get("data_columns", []):
+                    fields_with_category.append({"name": field_name, "type": "string"})
+        # 5. No categories - just return fields from data_columns without category
         else:
-            return self._get_default_fields()
+            logger.info(f"No allowed_fields found, using data_columns as fallback")
+            for field_name in source_config.attributes.get("data_columns", []):
+                fields_with_category.append({"name": field_name, "type": "string"})
 
-        # Extract field names from the sample
-        for field_name in sample_record.keys():
-            category = self._get_field_category(field_name)
-            field_type = self._infer_field_type(sample_record[field_name])
+        # 6. For ML models, add input_fields and output_fields with categories
+        if source_config.component_type == "ml_agent":
+            for field_name in source_config.attributes.get("input_fields", []):
+                fields_with_category.append({"name": field_name, "type": "string", "category": "input"})
+            for field_name in source_config.attributes.get("output_fields", []):
+                fields_with_category.append({"name": field_name, "type": "string", "category": "output"})
 
-            fields.append({
-                "name": field_name,
-                "type": field_type,
-                "category": category,
-                "description": f"{category.capitalize()} field: {field_name}"
-            })
+        # Deduplicate while preserving order (keep first occurrence with category if present)
+        seen_names = set()
+        unique_fields = []
+        for f in fields_with_category:
+            if f["name"] not in seen_names:
+                seen_names.add(f["name"])
+                unique_fields.append(f)
 
-        return fields
+        # Only cache non-empty results.  Empty means the component likely hasn't
+        # received data yet; caching it would hide the fields once they appear.
+        if unique_fields:
+            self._field_cache[pipeline_key] = unique_fields
 
-    def _get_field_category(self, field_name: str) -> str:
-        """
-        Get the category for a field name.
-
-        Args:
-            field_name: Field name
-
-        Returns:
-            Category name
-        """
-        field_name_lower = field_name.lower()
-
-        for category, fields in FIELD_CATEGORIES.items():
-            if any(field_name_lower == f.lower() or field_name_lower in f.lower() for f in fields):
-                return category
-
-        # Check for latency-related keywords
-        if any(kw in field_name_lower for kw in ["latency", "delay", "rtt"]):
-            return "latency"
-
-        # Default category
-        return "other"
-
-    def _infer_field_type(self, value: Any) -> str:
-        """
-        Infer the type of a field from its value.
-
-        Args:
-            value: Field value
-
-        Returns:
-            Type name (string, number, boolean, etc.)
-        """
-        if value is None:
-            return "null"
-        elif isinstance(value, bool):
-            return "boolean"
-        elif isinstance(value, int):
-            return "integer"
-        elif isinstance(value, float):
-            return "float"
-        elif isinstance(value, str):
-            return "string"
-        else:
-            return "unknown"
-
-    def _get_default_fields(self) -> List[dict]:
-        """
-        Get default field list when discovery fails.
-
-        Returns:
-            List of default field info dicts
-        """
-        fields = []
-        for category, field_list in FIELD_CATEGORIES.items():
-            for field_name in field_list:
-                fields.append({
-                    "name": field_name,
-                    "type": "unknown",
-                    "category": category,
-                    "description": f"{category.capitalize()} field: {field_name}"
-                })
-        return fields
+        logger.info(f"Discovered {len(unique_fields)} fields for {pipeline_key} from component registry")
+        return unique_fields
 
     async def list_discovered_fields(self) -> Dict[str, List[dict]]:
         """
@@ -358,7 +400,7 @@ class TransformerService:
         Returns:
             Sync result with status and created attributes
         """
-        if not self.permit_client:
+        if not self._permit_client:
             return {
                 "status": "error",
                 "message": "Permit client not configured",
@@ -371,6 +413,18 @@ class TransformerService:
 
         resource_key = sink.replace("-", "_")  # Normalize resource name
 
+        # Create the resource first if it doesn't exist
+        try:
+            await self._permit_client.create_resource(
+                resource_key=resource_key,
+                description=f"Data resource: {sink}"
+            )
+            logger.info(f"Created Permit.io resource: {resource_key}")
+        except Exception as e:
+            # Resource might already exist, log and continue
+            if "already exists" not in str(e).lower():
+                logger.warning(f"Failed to create resource {resource_key}: {e}")
+
         created_attributes = []
         failed_attributes = []
 
@@ -378,11 +432,11 @@ class TransformerService:
             attr_key = f"{self.config.ATTRIBUTE_PREFIX}{field['name']}"
 
             try:
-                await self.permit_client.create_resource_attribute(
+                await self._permit_client.create_resource_attribute(
                     resource_key=resource_key,
                     attribute_key=attr_key,
                     attribute_type="string",
-                    description=f"Field: {field['name']} ({field['category']})"
+                    description=f"Field: {field['name']}"
                 )
                 created_attributes.append(attr_key)
                 logger.info(f"Created Permit.io attribute: {attr_key} on resource {resource_key}")

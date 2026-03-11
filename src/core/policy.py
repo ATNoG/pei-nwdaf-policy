@@ -19,11 +19,29 @@ import asyncio
 class ComponentConfig:
     """Configuration for a component in the system."""
     component_id: str
-    component_type: str  # "ml_agent", "data_source", "api", "storage", etc.
+    component_type: str  # "ml_agent", "ml_model", "data_source", "api", "storage", etc.
     allowed_fields: dict[str, list[str]] = field(default_factory=dict)
     # allowed_fields[sink_component] = [field1, field2, ...]
     role: Optional[str] = None
+    additional_roles: list[str] = field(default_factory=list)
+    permit_user_key: Optional[str] = None
     attributes: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def all_roles(self) -> list[str]:
+        """All roles (primary + additional), deduplicated, order-preserved."""
+        roles: list[str] = []
+        if self.role:
+            roles.append(self.role)
+        for r in self.additional_roles:
+            if r not in roles:
+                roles.append(r)
+        return roles
+
+    @property
+    def effective_user_key(self) -> str:
+        """Permit.io user key. Defaults to component_id."""
+        return self.permit_user_key or self.component_id
 
 
 @dataclass
@@ -83,6 +101,12 @@ class PolicyEngine:
         """
         Register a component and sync it to Permit.io as a user (async).
 
+        Uses ``config.effective_user_key`` as the Permit.io user key so that
+        multiple components can optionally share a single Permit.io user
+        (useful for ML models that want identical permissions).
+
+        All roles returned by ``config.all_roles`` are assigned.
+
         Args:
             config: ComponentConfig with component details
 
@@ -92,31 +116,32 @@ class PolicyEngine:
         import logging
         logger = logging.getLogger(__name__)
         try:
+            user_key = config.effective_user_key
+
             # Sync component to Permit.io as a user
             user_data = {
-                "key": config.component_id,
+                "key": user_key,
                 "attributes": {
                     "component_type": config.component_type,
                     "allowed_fields": config.allowed_fields,
                     **config.attributes,
                 }
             }
-            logger.info(f"Registering component {config.component_id} with role {config.role}")
+            logger.info(f"Registering component {config.component_id} (permit user={user_key}) with roles {config.all_roles}")
             await self.permit.sync_user(user_data)
 
-            # Assign role if specified
-            if config.role:
-                logger.info(f"Assigning role {config.role} to component {config.component_id}")
+            # Assign all roles (primary + additional)
+            for role_key in config.all_roles:
                 try:
                     await self.permit.assign_role(
-                        user_key=config.component_id,
-                        role_key=config.role,
+                        user_key=user_key,
+                        role_key=role_key,
                         tenant_id="default"
                     )
+                    logger.info(f"Assigned role {role_key} to {user_key}")
                 except Exception as role_error:
                     # Log but don't fail registration if role doesn't exist
-                    logger.warning(f"Failed to assign role {config.role} to component {config.component_id}: {role_error}")
-                    logger.warning(f"Component {config.component_id} registered but role assignment skipped. Create the role in Permit.io dashboard or API.")
+                    logger.warning(f"Failed to assign role {role_key} to {user_key}: {role_error}")
 
             self.components[config.component_id] = config
             logger.info(f"Successfully registered component {config.component_id}")
@@ -236,30 +261,80 @@ class PolicyEngine:
         action: str = "read"
     ) -> AccessDecision:
         """
-        Check if source component is authorized to access sink.
+        Check if source is authorized to send data to sink.
+
+        The policy check supports two scenarios:
+        1. Infrastructure sources (e.g., Kafka) - not registered, check sink permissions only
+        2. Component sources (e.g., Ingestion-Service) - registered, check if they can send to sink
 
         Args:
             source_id: Source component ID
-            sink_id: Sink component ID
+            sink_id: Sink component ID (e.g., "data-storage:influx")
             data_type: Type of data being accessed
             action: Action type (read, write, inference, etc.)
 
         Returns:
             AccessDecision with allowed status and reason
         """
+        # Extract the component_id from sink_id (e.g., "data-storage" from "data-storage:influx")
+        # This is the actual registered user in Permit.io
+        sink_component = sink_id.split(":")[0] if ":" in sink_id else sink_id
+
         try:
-            # Check if source component exists (if registration required)
+            # Check if sink component exists (if registration required)
             if self.config.REQUIRE_REGISTRATION:
-                if source_id not in self.components:
-                    raise ComponentNotFoundError(source_id)
+                if sink_component not in self.components:
+                    raise ComponentNotFoundError(sink_component)
+
+            # Determine which user to check:
+            # - If source is a registered component, check if source can send to sink
+            # - If source is not registered (e.g., infrastructure like Kafka), check sink permissions
+            # - If source has resource type (e.g., "data-storage:influx"), use base component for check
+            user_to_check = source_id
+            check_sink_permissions = False
+
+            # Extract base component from resource-typed source (e.g., "data-storage:influx" -> "data-storage")
+            source_component = source_id.split(":")[0] if ":" in source_id else source_id
+
+            if source_component not in self.components:
+                # Source (or its base component) is not a registered component (e.g., Kafka)
+                # Fall back to checking if the sink has permission to perform the action
+                user_to_check = sink_component
+                check_sink_permissions = True
+                # Resolve effective_user_key for the sink if it exists
+                sink_config = self.components.get(sink_component)
+                if sink_config:
+                    user_to_check = sink_config.effective_user_key
+            else:
+                # Source component is registered - resolve effective_user_key
+                source_config = self.components[source_component]
+                user_to_check = source_config.effective_user_key
+
+            # Perform the policy check
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"PERMIT CHECK: user={user_to_check}, action={action}, resource_type={data_type}, resource_id={sink_id}")
+            logger.info(f"PERMIT CHECK: check_sink_permissions={check_sink_permissions}, source_id={source_id}, sink_component={sink_component}")
 
             permitted = await self.permit.check(
-                user=source_id,
+                user=user_to_check,
                 action=action,
-                resource={"type": data_type, "id": sink_id}
+                resource={"type": data_type, "id": sink_id},
+                context={
+                    "source_component": source_id,
+                    "sink_component": sink_component,
+                    "check_sink_permissions": check_sink_permissions
+                }
             )
 
+            logger.info(f"PERMIT RESULT: permitted={permitted}")
+
             if not permitted:
+                if check_sink_permissions:
+                    return AccessDecision(
+                        allowed=False,
+                        reason=f"Authorization denied: {sink_component} not allowed to {action} {sink_id}"
+                    )
                 return AccessDecision(
                     allowed=False,
                     reason=f"Authorization denied: {source_id} not allowed to {action} {sink_id}"
@@ -273,7 +348,7 @@ class PolicyEngine:
         except ComponentNotFoundError:
             return AccessDecision(
                 allowed=False,
-                reason=f"Component not found: {source_id}. Register component first."
+                reason=f"Component not found: {sink_component}. Register component first."
             )
         except Exception as e:
             # Fail-open for production safety
@@ -443,12 +518,13 @@ class PolicyEngine:
             if not component:
                 return not self.config.REQUIRE_REGISTRATION
 
-            if component.role != expected_role:
+            if expected_role not in component.all_roles:
                 return False
 
-            # Check Permit.io permissions
+            # Check Permit.io permissions using effective user key
+            user_key = component.effective_user_key
             permitted = await self.permit.check(
-                user=component_id,
+                user=user_key,
                 action="inference",
                 resource={"type": f"model:{model_data_type}", "id": model_id}
             )

@@ -1,10 +1,13 @@
 """
 Policy evaluation service - main business logic for policy enforcement.
 """
+import logging
 from typing import Dict, Any
 from src.core.policy import PolicyEngine
 from src.services.cache_service import CacheService
 from src.core.config import PolicyConfig
+
+logger = logging.getLogger(__name__)
 
 
 class PolicyService:
@@ -46,10 +49,14 @@ class PolicyService:
         Returns:
             Tuple of (allowed, reason)
         """
+        logger.info(f"Policy check: source_id={source_id}, sink_id={sink_id}, resource={resource}, action={action}")
+        logger.info(f"Registered components: {list(self.policy_engine.components.keys())}")
+
         # Check cache first
         cache_key = (source_id, sink_id, resource, action)
         cached_result = self.cache.get(*cache_key)
         if cached_result is not None:
+            logger.info(f"Cache HIT: {cached_result}")
             return cached_result
 
         # Evaluate policy
@@ -61,6 +68,7 @@ class PolicyService:
         )
 
         result = (decision.allowed, decision.reason)
+        logger.info(f"Policy decision: allowed={decision.allowed}, reason={decision.reason}")
         self.cache.set(result, *cache_key)
 
         return result

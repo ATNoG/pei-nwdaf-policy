@@ -192,7 +192,7 @@ class PermitClient:
         self,
         resource_key: str,
         attribute_key: str,
-        attribute_type: str,
+        attribute_type: str = "string",
         description: Optional[str] = None,
     ) -> None:
         """
@@ -205,16 +205,122 @@ class PermitClient:
             description: Attribute description
         """
         try:
-            await self.api.resource_attributes.create(
-                resource_key=resource_key,
-                attribute_key=attribute_key,
+            from permit import ResourceAttributeCreate
+
+            attribute_data = ResourceAttributeCreate(
+                key=attribute_key,
                 type=attribute_type,
                 description=description or f"Attribute {attribute_key}",
+            )
+
+            await self.api.resource_attributes.create(
+                resource_key=resource_key,
+                attribute_data=attribute_data,
             )
         except Exception as e:
             # Ignore if already exists
             if "already exists" not in str(e):
                 raise PermitConnectionError(f"Failed to create attribute: {e}")
+
+    async def list_users(
+        self,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        List all users (components) synced to Permit.io.
+
+        Uses the Permit.io API to retrieve all users, which represent
+        registered components in our system.
+
+        Args:
+            page: Page number (1-based)
+            per_page: Number of results per page
+
+        Returns:
+            List of user dictionaries with key, attributes, etc.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            paginated = await self.api.users.list(page=page, per_page=per_page)
+            result = []
+            for user in paginated.data:
+                user_dict = {
+                    "key": user.key,
+                    "email": getattr(user, "email", None),
+                    "first_name": getattr(user, "first_name", None),
+                    "last_name": getattr(user, "last_name", None),
+                    "attributes": getattr(user, "attributes", {}) or {},
+                }
+                result.append(user_dict)
+            logger.info(f"Listed {len(result)} users from Permit.io (page={page})")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to list users from Permit.io: {type(e).__name__}: {e}", exc_info=True)
+            raise PermitConnectionError(f"Failed to list users: {e}")
+
+    async def get_user(self, user_key: str) -> dict[str, Any] | None:
+        """
+        Get a single user (component) from Permit.io by key.
+
+        Args:
+            user_key: The user/component key
+
+        Returns:
+            User dictionary or None if not found
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            user = await self.api.users.get(user_key)
+            return {
+                "key": user.key,
+                "email": getattr(user, "email", None),
+                "first_name": getattr(user, "first_name", None),
+                "last_name": getattr(user, "last_name", None),
+                "attributes": getattr(user, "attributes", {}) or {},
+            }
+        except Exception as e:
+            if "404" in str(e) or "not found" in str(e).lower():
+                logger.info(f"User {user_key} not found in Permit.io")
+                return None
+            logger.error(f"Failed to get user {user_key}: {type(e).__name__}: {e}", exc_info=True)
+            raise PermitConnectionError(f"Failed to get user: {e}")
+
+    async def list_role_assignments(
+        self,
+        user_key: str | None = None,
+        tenant_id: str = "default",
+    ) -> list[dict[str, str]]:
+        """
+        List role assignments, optionally filtered by user.
+
+        Args:
+            user_key: Optional user key to filter by
+            tenant_id: Tenant ID (default: "default")
+
+        Returns:
+            List of role assignment dicts with 'user', 'role', 'tenant'
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            kwargs = {"tenant_key": tenant_id}
+            if user_key:
+                kwargs["user_key"] = user_key
+            assignments = await self.api.role_assignments.list(**kwargs)
+            result = []
+            for ra in assignments:
+                result.append({
+                    "user": ra.user,
+                    "role": ra.role,
+                    "tenant": ra.tenant,
+                })
+            return result
+        except Exception as e:
+            logger.error(f"Failed to list role assignments: {type(e).__name__}: {e}", exc_info=True)
+            raise PermitConnectionError(f"Failed to list role assignments: {e}")
 
     def sync_user_sync(self, user_data: dict[str, Any]) -> None:
         """
