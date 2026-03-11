@@ -8,6 +8,7 @@ and applies transformations locally. This improves privacy, performance, and sca
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -104,6 +105,7 @@ class PolicyClient:
         cache_size: int = 1000,
         timeout: int = 5,
         registration_timeout: int = 60,
+        heartbeat_interval: int = 30,
         enable_policy: bool = False,
         fail_open: bool = True
     ):
@@ -131,6 +133,7 @@ class PolicyClient:
         self.component_id = component_id
         self.timeout = timeout
         self.registration_timeout = registration_timeout
+        self.heartbeat_interval = heartbeat_interval
         self.enable_policy = enable_policy
         self.fail_open = fail_open
         self._fields_source = fields
@@ -140,6 +143,10 @@ class PolicyClient:
 
         # Field cache key for callable sources
         self._fields_cache_key = f"{self.component_id}:fields"
+
+        # Heartbeat state — populated on first successful register_component call
+        self._last_register_kwargs: dict | None = None
+        self._heartbeat_task: asyncio.Task | None = None
 
         logger.info(
             f"PolicyClient initialized: service={service_url}, "
@@ -251,11 +258,76 @@ class PolicyClient:
         try:
             await retry_with_backoff(_do_register)
             logger.info(f"Component registered: {self.component_id}")
+
+            # Remember kwargs so start_heartbeat() / the sync heartbeat thread
+            # can re-register with identical params after a Policy restart.
+            self._last_register_kwargs = {
+                "component_type": component_type,
+                "role": role,
+                "data_columns": data_columns,
+                "auto_create_attributes": auto_create_attributes,
+                "allowed_fields": allowed_fields,
+            }
+
             return True
 
         except Exception as e:
             logger.error(f"Failed to register component after retries: {e}")
             return False
+
+    async def _heartbeat_loop(self) -> None:
+        """
+        Background task that periodically re-registers this component so the
+        Policy Service registry stays populated after a Policy restart.
+        """
+        while True:
+            await asyncio.sleep(self.heartbeat_interval)
+            if not self._last_register_kwargs:
+                continue
+            try:
+                await self._request(
+                    "POST",
+                    "/api/v1/components",
+                    {"component_id": self.component_id, **self._last_register_kwargs},
+                    timeout_override=self.registration_timeout,
+                )
+                logger.debug(f"Heartbeat: re-registered {self.component_id}")
+            except Exception as e:
+                logger.debug(
+                    f"Heartbeat re-registration failed for {self.component_id} "
+                    f"(will retry in {self.heartbeat_interval}s): {e}"
+                )
+
+    async def start_heartbeat(self) -> None:
+        """
+        Start a background asyncio task that periodically re-registers this
+        component so the Policy Service registry stays populated after a
+        Policy restart.
+
+        Call this once from your async lifespan / startup after the first
+        successful ``register_component``.  It is a no-op if the heartbeat
+        is already running or ``heartbeat_interval`` is 0.
+        """
+        if self.heartbeat_interval <= 0:
+            return
+        if self._heartbeat_task is not None and not self._heartbeat_task.done():
+            return  # Already running
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        logger.info(
+            f"Heartbeat started for {self.component_id}: "
+            f"re-registering every {self.heartbeat_interval}s"
+        )
+
+    async def stop_heartbeat(self) -> None:
+        """Cancel the background heartbeat task if it is running."""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        self._heartbeat_task = None
+        logger.info(f"Heartbeat stopped for {self.component_id}")
 
     async def _request(
         self,
@@ -507,6 +579,8 @@ class SyncPolicyClient:
     def __init__(self, async_client: PolicyClient):
         self._async_client = async_client
         self._loop = None
+        self._heartbeat_stop: "threading.Event | None" = None
+        self._heartbeat_thread: "threading.Thread | None" = None
 
     def _run_coroutine(self, coro, timeout: int | None = None):
         """
@@ -583,13 +657,82 @@ class SyncPolicyClient:
         Uses ``registration_timeout`` instead of the short hot-path ``timeout``
         so that the background thread is not killed before the Policy Service
         finishes processing the request.
+
+        Also auto-starts the sync heartbeat thread on the first successful
+        registration if ``heartbeat_interval > 0`` on the underlying client.
         """
-        return self._run_coroutine(
+        result = self._run_coroutine(
             self._async_client.register_component(
                 component_type, role, data_columns, auto_create_attributes, allowed_fields
             ),
             timeout=self._async_client.registration_timeout,
         )
+        if result and self._async_client.heartbeat_interval > 0:
+            if self._heartbeat_thread is None or not self._heartbeat_thread.is_alive():
+                self.start_heartbeat()
+        return result
+
+    def start_heartbeat(self, interval: int | None = None) -> None:
+        """
+        Start a daemon thread that periodically re-registers this component.
+
+        Called automatically by ``register_component`` when
+        ``heartbeat_interval > 0``.  Safe to call manually as well — calling
+        it while a heartbeat thread is already alive is a no-op.
+
+        Args:
+            interval: Override the ``heartbeat_interval`` set on the async
+                client (seconds).  Defaults to ``async_client.heartbeat_interval``.
+        """
+        effective_interval = interval if interval is not None else self._async_client.heartbeat_interval
+        if effective_interval <= 0:
+            return
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return  # Already running
+
+        stop_event = threading.Event()
+        self._heartbeat_stop = stop_event
+
+        def _loop() -> None:
+            while not stop_event.wait(timeout=effective_interval):
+                kwargs = self._async_client._last_register_kwargs
+                if not kwargs:
+                    continue
+                try:
+                    self.register_component(**kwargs)
+                    logger.debug(
+                        f"Sync heartbeat: re-registered {self._async_client.component_id}"
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"Sync heartbeat re-registration failed for "
+                        f"{self._async_client.component_id} "
+                        f"(will retry in {effective_interval}s): {e}"
+                    )
+
+        hb_thread = threading.Thread(
+            target=_loop,
+            daemon=True,
+            name=f"policy-heartbeat-{self._async_client.component_id}",
+        )
+        self._heartbeat_thread = hb_thread
+        hb_thread.start()
+        logger.info(
+            f"Sync heartbeat started for {self._async_client.component_id}: "
+            f"re-registering every {effective_interval}s"
+        )
+
+    def stop_heartbeat(self) -> None:
+        """Stop the background heartbeat thread if it is running."""
+        stop_event = self._heartbeat_stop
+        if stop_event is not None:
+            stop_event.set()
+        hb_thread = self._heartbeat_thread
+        if hb_thread is not None:
+            hb_thread.join(timeout=5)
+        self._heartbeat_thread = None
+        self._heartbeat_stop = None
+        logger.info(f"Sync heartbeat stopped for {self._async_client.component_id}")
 
     def clear_cache(self) -> None:
         """Clear the decision cache."""
