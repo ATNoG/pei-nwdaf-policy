@@ -1,7 +1,49 @@
 services:
-  #TODO
-  the_service:
-    build: .
+  policy-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: policy-service
+    ports:
+      - "8788:8788"
+    environment:
+      - PERMIT_API_KEY=${PERMIT_API_KEY}
+      - PERMIT_PDP_URL=${PERMIT_PDP_URL:-http://permit:7000}
+      - AUTO_CREATE_ATTRIBUTES=${AUTO_CREATE_ATTRIBUTES:-true}
+      - DECISION_CACHE_TTL=${DECISION_CACHE_TTL:-60}
+      - REQUIRE_REGISTRATION=${REQUIRE_REGISTRATION:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./configs:/app/configs
+    networks:
+      - nwdaf-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8788/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      permit:
+        condition: service_started
+
+  permit:
+    image: permitio/pdp-v2:latest
+    container_name: permit-pdp
+    ports:
+      - "7766:7000"
+    environment:
+      - PDP_DEBUG=${PDP_DEBUG:-False}
+      - PDP_API_KEY=${PDP_API_KEY}
+    networks:
+      - nwdaf-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7000/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   nwdaf-network:

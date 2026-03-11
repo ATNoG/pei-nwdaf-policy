@@ -1,5 +1,10 @@
-# pei-nwdaf-template
-A template for PEI nwadaf components
+# Policy Service
+A stateless data governance enforcer upon different segments of the entire pipeline
+
+
+
+
+scrap info... to delete later:
 
 # Setup jenkins?
 1. self-hosted runner
