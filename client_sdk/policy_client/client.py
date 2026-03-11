@@ -216,9 +216,12 @@ class PolicyClient:
         self,
         component_type: str,
         role: str | None = None,
+        additional_roles: list[str] | None = None,
+        permit_user_key: str | None = None,
         data_columns: list[str] | None = None,
         auto_create_attributes: bool = True,
-        allowed_fields: dict[str, list[str]] | None = None
+        allowed_fields: dict[str, list[str]] | None = None,
+        attributes: dict[str, Any] | None = None,
     ) -> bool:
         """
         Register this component with the Policy Service.
@@ -228,10 +231,13 @@ class PolicyClient:
 
         Args:
             component_type: Type of component
-            role: Optional role to assign
+            role: Optional primary role to assign
+            additional_roles: Optional additional roles beyond primary
+            permit_user_key: Optional Permit.io user key override (for sharing)
             data_columns: Optional data columns (if not provided, uses resolved fields)
             auto_create_attributes: Whether to auto-create attributes
             allowed_fields: Optional allowed fields per sink
+            attributes: Optional additional component attributes
 
         Returns:
             True if successful
@@ -241,17 +247,24 @@ class PolicyClient:
             data_columns = await self._get_fields()
 
         async def _do_register():
+            payload = {
+                "component_id": self.component_id,
+                "component_type": component_type,
+                "role": role,
+                "data_columns": data_columns,
+                "auto_create_attributes": auto_create_attributes,
+                "allowed_fields": allowed_fields,
+            }
+            if additional_roles is not None:
+                payload["additional_roles"] = additional_roles
+            if permit_user_key is not None:
+                payload["permit_user_key"] = permit_user_key
+            if attributes is not None:
+                payload["attributes"] = attributes
             await self._request(
                 "POST",
                 "/api/v1/components",
-                {
-                    "component_id": self.component_id,
-                    "component_type": component_type,
-                    "role": role,
-                    "data_columns": data_columns,
-                    "auto_create_attributes": auto_create_attributes,
-                    "allowed_fields": allowed_fields
-                },
+                payload,
                 timeout_override=self.registration_timeout,
             )
 
@@ -264,9 +277,12 @@ class PolicyClient:
             self._last_register_kwargs = {
                 "component_type": component_type,
                 "role": role,
+                "additional_roles": additional_roles,
+                "permit_user_key": permit_user_key,
                 "data_columns": data_columns,
                 "auto_create_attributes": auto_create_attributes,
                 "allowed_fields": allowed_fields,
+                "attributes": attributes,
             }
 
             return True
@@ -525,34 +541,56 @@ class PolicyClient:
         model_name: str,
         input_fields: list[str],
         output_fields: list[str],
-        data_type: str
+        data_type: str,
+        architecture: str | None = None,
+        permit_user_key: str | None = None,
+        additional_roles: list[str] | None = None,
+        window_duration_seconds: int | None = None,
     ) -> bool:
         """
         Register an ML model with the Policy Service.
 
+        The model is registered as a first-class policy component
+        (type ``ml_model``) via the ``POST /api/v1/ml/models`` endpoint.
+
         Args:
-            model_id: Unique model identifier
+            model_id: Unique model identifier (e.g. UUID from MLflow)
             model_name: Human-readable model name
-            input_fields: Input field names
-            output_fields: Output field names
+            input_fields: Input field names the model reads
+            output_fields: Output field names the model produces
             data_type: Data type for role assignment
+            architecture: Optional model architecture label (ann, lstm, …)
+            permit_user_key: Optional shared Permit.io user key
+            additional_roles: Optional additional roles beyond default ML role
+            window_duration_seconds: Optional window duration in seconds
 
         Returns:
             True if successful
         """
         try:
+            payload: dict[str, Any] = {
+                "model_id": model_id,
+                "model_name": model_name,
+                "input_fields": input_fields,
+                "output_fields": output_fields,
+                "data_type": data_type,
+            }
+            if architecture is not None:
+                payload["architecture"] = architecture
+            if permit_user_key is not None:
+                payload["permit_user_key"] = permit_user_key
+            if additional_roles is not None:
+                payload["additional_roles"] = additional_roles
+            if window_duration_seconds is not None:
+                payload["window_duration_seconds"] = window_duration_seconds
+
             await self._request(
                 "POST",
                 "/api/v1/ml/models",
-                {
-                    "model_id": model_id,
-                    "model_name": model_name,
-                    "input_fields": input_fields,
-                    "output_fields": output_fields,
-                    "data_type": data_type
-                }
+                payload,
+                timeout_override=self.registration_timeout,
             )
-            logger.info(f"ML model registered: {model_id}")
+            logger.info(f"ML model registered: {model_id} (name={model_name})")
             return True
 
         except Exception as e:
@@ -648,9 +686,12 @@ class SyncPolicyClient:
         self,
         component_type: str,
         role: str | None = None,
+        additional_roles: list[str] | None = None,
+        permit_user_key: str | None = None,
         data_columns: list[str] | None = None,
         auto_create_attributes: bool = True,
-        allowed_fields: dict[str, list[str]] | None = None
+        allowed_fields: dict[str, list[str]] | None = None,
+        attributes: dict[str, Any] | None = None,
     ) -> bool:
         """Synchronous version of register_component.
 
@@ -663,7 +704,14 @@ class SyncPolicyClient:
         """
         result = self._run_coroutine(
             self._async_client.register_component(
-                component_type, role, data_columns, auto_create_attributes, allowed_fields
+                component_type,
+                role,
+                additional_roles,
+                permit_user_key,
+                data_columns,
+                auto_create_attributes,
+                allowed_fields,
+                attributes,
             ),
             timeout=self._async_client.registration_timeout,
         )
