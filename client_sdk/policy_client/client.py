@@ -103,6 +103,7 @@ class PolicyClient:
         cache_ttl: int = 60,
         cache_size: int = 1000,
         timeout: int = 5,
+        registration_timeout: int = 60,
         enable_policy: bool = False,
         fail_open: bool = True
     ):
@@ -118,13 +119,18 @@ class PolicyClient:
                 - Callable: Function that returns field names (sync or async)
             cache_ttl: Cache TTL in seconds
             cache_size: Maximum cache size
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds for hot-path calls (policy checks, field fetches)
+            registration_timeout: Request timeout in seconds for component registration.
+                Registration involves N sequential Permit.io attribute creations on the server
+                and can take much longer than a hot-path check.  Keep this well above the
+                expected wall-clock time (default 60 s).
             enable_policy: Whether policy enforcement is enabled (policyless mode if False)
             fail_open: If True, allow data through on policy check failures
         """
         self.service_url = service_url.rstrip("/")
         self.component_id = component_id
         self.timeout = timeout
+        self.registration_timeout = registration_timeout
         self.enable_policy = enable_policy
         self.fail_open = fail_open
         self._fields_source = fields
@@ -238,7 +244,8 @@ class PolicyClient:
                     "data_columns": data_columns,
                     "auto_create_attributes": auto_create_attributes,
                     "allowed_fields": allowed_fields
-                }
+                },
+                timeout_override=self.registration_timeout,
             )
 
         try:
@@ -254,7 +261,8 @@ class PolicyClient:
         self,
         method: str,
         endpoint: str,
-        data: dict[str, Any] | None = None
+        data: dict[str, Any] | None = None,
+        timeout_override: int | None = None,
     ) -> dict:
         """
         Make an HTTP request to the Policy Service.
@@ -263,11 +271,15 @@ class PolicyClient:
             method: HTTP method
             endpoint: API endpoint
             data: Request body
+            timeout_override: If given, use this timeout instead of ``self.timeout``.
+                Pass ``self.registration_timeout`` for registration calls so they
+                are not prematurely killed by the short hot-path timeout.
 
         Returns:
             Response JSON
         """
         url = f"{self.service_url}{endpoint}"
+        effective_timeout = timeout_override if timeout_override is not None else self.timeout
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -275,7 +287,7 @@ class PolicyClient:
                     method=method,
                     url=url,
                     json=data,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    timeout=aiohttp.ClientTimeout(total=effective_timeout)
                 ) as response:
                     response.raise_for_status()
                     return await response.json()
@@ -496,8 +508,18 @@ class SyncPolicyClient:
         self._async_client = async_client
         self._loop = None
 
-    def _run_coroutine(self, coro):
-        """Run a coroutine, handling both cases: with or without a running event loop."""
+    def _run_coroutine(self, coro, timeout: int | None = None):
+        """
+        Run a coroutine, handling both cases: with or without a running event loop.
+
+        Args:
+            coro: Coroutine to run.
+            timeout: How long (seconds) to wait for the result when the call must
+                run in a background thread (i.e. when a loop is already running).
+                Defaults to ``self._async_client.timeout`` (the short hot-path
+                timeout).  Pass ``self._async_client.registration_timeout`` for
+                registration calls so the thread is not killed prematurely.
+        """
         try:
             # Try to get the running loop
             loop = asyncio.get_running_loop()
@@ -517,10 +539,12 @@ class SyncPolicyClient:
             finally:
                 new_loop.close()
 
+        effective_timeout = timeout if timeout is not None else self._async_client.timeout
+
         # Use ThreadPoolExecutor to run in background thread
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(run_in_thread)
-            return future.result(timeout=self._async_client.timeout)
+            return future.result(timeout=effective_timeout)
 
     def check_access(
         self,
@@ -554,10 +578,18 @@ class SyncPolicyClient:
         auto_create_attributes: bool = True,
         allowed_fields: dict[str, list[str]] | None = None
     ) -> bool:
-        """Synchronous version of register_component."""
-        return self._run_coroutine(self._async_client.register_component(
-            component_type, role, data_columns, auto_create_attributes, allowed_fields
-        ))
+        """Synchronous version of register_component.
+
+        Uses ``registration_timeout`` instead of the short hot-path ``timeout``
+        so that the background thread is not killed before the Policy Service
+        finishes processing the request.
+        """
+        return self._run_coroutine(
+            self._async_client.register_component(
+                component_type, role, data_columns, auto_create_attributes, allowed_fields
+            ),
+            timeout=self._async_client.registration_timeout,
+        )
 
     def clear_cache(self) -> None:
         """Clear the decision cache."""
