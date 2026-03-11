@@ -131,6 +131,29 @@ async def list_discovered_fields(
     return await transformer_service.list_discovered_fields()
 
 
+@router.post("/fields/cache/clear", response_model=Dict[str, Any])
+async def clear_field_cache(
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Clear the field discovery cache.
+
+    This forces a refresh of field discovery on the next request.
+    Useful after components have dynamically discovered new fields.
+
+    Returns:
+        Status message indicating cache was cleared
+    """
+    cleared_count = len(transformer_service._field_cache)
+    transformer_service._field_cache.clear()
+
+    return {
+        "status": "success",
+        "message": f"Cleared {cleared_count} cached field discoveries",
+        "cleared_count": cleared_count
+    }
+
+
 # ==================== Pipeline CRUD Endpoints ====================
 
 @router.post("/{pipeline_id}", response_model=TransformerPipelineResponse, status_code=status.HTTP_201_CREATED)

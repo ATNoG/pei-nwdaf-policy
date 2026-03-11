@@ -14,7 +14,7 @@ services:
       - REQUIRE_REGISTRATION=${REQUIRE_REGISTRATION:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - ./configs:/app/configs:ro
+      - ./configs:/app/configs
     networks:
       - nwdaf-network
     restart: unless-stopped

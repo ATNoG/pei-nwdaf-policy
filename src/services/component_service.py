@@ -1,7 +1,8 @@
 """
 Component registration and management service.
 """
-from typing import Optional, List
+from __future__ import annotations
+from typing import Optional, List, TYPE_CHECKING
 from src.core.policy import ComponentConfig, PolicyEngine
 from src.permit.permit_client import PermitClient
 from src.core.config import PolicyConfig
@@ -9,6 +10,8 @@ from src.core.exceptions import ComponentRegistrationError, ComponentNotFoundErr
 from src.models.enums import ComponentType
 import logging
 
+if TYPE_CHECKING:
+    from src.services.transformer_service import TransformerService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,15 @@ class ComponentService:
         self.policy_engine = policy_engine
         self.permit_client = permit_client
         self.config = config
+        # Will be set after TransformerService is created (avoids circular init)
+        self._transformer_service: Optional[TransformerService] = None
+
+    def set_transformer_service(self, transformer_service: TransformerService) -> None:
+        """
+        Inject the TransformerService so we can invalidate its field cache
+        whenever a component re-registers.
+        """
+        self._transformer_service = transformer_service
 
     async def register_component(
         self,
@@ -76,6 +88,14 @@ class ComponentService:
         success = await self.policy_engine.register_component(config)
         if not success:
             raise ComponentRegistrationError(f"Failed to register component: {component_id}")
+
+        # Invalidate any cached field-discovery results that involve this component.
+        # Without this, a stale empty-list result would persist even after the
+        # component re-registers with newly discovered fields.
+        if self._transformer_service is not None:
+            cleared = self._transformer_service.invalidate_cache_for_component(component_id)
+            if cleared:
+                logger.info(f"ComponentService: Cleared {cleared} stale field-cache entries for {component_id}")
 
         # Auto-create attributes if enabled
         if auto_create_attributes and data_columns:

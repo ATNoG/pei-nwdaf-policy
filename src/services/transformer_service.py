@@ -34,7 +34,7 @@ class TransformerService:
         self.config_path = Path(config.TRANSFORMER_CONFIG_PATH)
         self._permit_client = permit_client
 
-        # Cache for discovered fields
+        # Cache for discovered fields (keyed by pipeline_key or component_id)
         self._field_cache: Dict[str, List[dict]] = {}
 
     async def create_pipeline(
@@ -212,35 +212,92 @@ class TransformerService:
         logger.info(f"Retrieved {len(fields)} fields for component {component_id}")
         return fields
 
+    def invalidate_cache_for_component(self, component_id: str) -> int:
+        """
+        Invalidate all cached field discoveries that involve a given component.
+
+        Called when a component re-registers so stale results are evicted.
+
+        Args:
+            component_id: The component whose cache entries should be purged.
+
+        Returns:
+            Number of cache entries removed.
+        """
+        # Remove pipeline-keyed entries where the component appears as source or sink
+        # Pipeline keys look like "source_to_sink"
+        keys_to_remove = [
+            k for k in self._field_cache
+            if k == component_id  # component-level cache
+            or k.startswith(f"{component_id}_to_")  # component is source
+            or f"_to_{component_id}" in k  # component is sink (or sink:resource)
+        ]
+        for k in keys_to_remove:
+            del self._field_cache[k]
+
+        if keys_to_remove:
+            logger.info(f"Invalidated {len(keys_to_remove)} cached field entries for component {component_id}: {keys_to_remove}")
+        return len(keys_to_remove)
+
     async def discover_fields(self, source: str, sink: str) -> List[dict]:
         """
         Discover available fields for a pipeline from registered component data.
 
         Args:
-            source: Source component ID
-            sink: Sink component ID (used to look up source's allowed_fields for this sink)
+            source: Source component ID (may include resource type like "data-storage:influx")
+            sink: Sink component ID (may include resource type like "data-storage:clickhouse")
 
         Returns:
             List of field info dicts with 'name', 'type', and optionally 'category'
         """
         pipeline_key = f"{source}_to_{sink}"
 
-        # Check cache first
+        # Check cache first — but only return cached results when they are non-empty.
+        # Empty results are NOT cached because they typically indicate a timing issue
+        # (component registered before data arrived) and would mask later updates.
         if pipeline_key in self._field_cache:
-            logger.info(f"Returning cached fields for {pipeline_key}")
-            return self._field_cache[pipeline_key]
+            cached = self._field_cache[pipeline_key]
+            if cached:  # only return if non-empty
+                logger.info(f"Returning cached fields for {pipeline_key} ({len(cached)} fields)")
+                return cached
+            else:
+                # Evict stale empty entry so we re-evaluate
+                logger.info(f"Evicting stale empty cache for {pipeline_key}")
+                del self._field_cache[pipeline_key]
+
+        # Parse source component and resource type
+        # Format: "component_id" or "component_id:resourceType"
+        source_component_id = source.split(":")[0] if ":" in source else source
+        source_resource_type = source.split(":", 1)[1] if ":" in source else None
 
         # Get source component from policy engine
-        source_config: Optional[ComponentConfig] = self.policy_engine.get_component(source)
+        source_config: Optional[ComponentConfig] = self.policy_engine.get_component(source_component_id)
         if not source_config:
-            logger.warning(f"Source component {source} not found in registry")
+            logger.warning(f"Source component {source_component_id} not found in registry")
             return []
 
         # Collect fields from the component's registration
         fields_with_category = []
 
-        # 1. Check for wildcard pattern {"*": ["*"]} - means any sink, all fields
-        if "*" in source_config.allowed_fields:
+        logger.info(f"Field discovery for {pipeline_key}: source_component_id={source_component_id}, source_resource_type={source_resource_type}")
+        logger.info(f"Source allowed_fields keys: {list(source_config.allowed_fields.keys())}")
+
+        # 1. If source has a resource type, look for fields in allowed_fields under that specific key
+        if source_resource_type:
+            source_key = f"{source_component_id}:{source_resource_type}"
+            if source_key in source_config.allowed_fields:
+                # Use the fields specific to this resource type
+                category = source_resource_type
+                for field_name in source_config.allowed_fields[source_key]:
+                    fields_with_category.append({"name": field_name, "type": "string", "category": category})
+            else:
+                # Resource type specified but not found - fall back to data_columns
+                logger.warning(f"Resource type {source_key} not found in allowed_fields, using data_columns")
+                for field_name in source_config.attributes.get("data_columns", []):
+                    fields_with_category.append({"name": field_name, "type": "string"})
+        # 2. Check for wildcard pattern {"*": ["*"]} - means any sink, all fields
+        elif "*" in source_config.allowed_fields:
+            logger.info(f"Found wildcard pattern in allowed_fields")
             # Return the sink's data_columns as available fields
             # (kafka can produce whatever fields the sink accepts)
             sink_component_id = sink.split(":")[0] if ":" in sink else sink
@@ -248,8 +305,9 @@ class TransformerService:
             if sink_config and sink_config.attributes.get("data_columns"):
                 for field_name in sink_config.attributes["data_columns"]:
                     fields_with_category.append({"name": field_name, "type": "string"})
-        # 2. Check if component has fields in its allowed_fields for this specific sink
+        # 3. Check if component has fields in its allowed_fields for this specific sink
         elif sink in source_config.allowed_fields:
+            logger.info(f"Found sink '{sink}' in allowed_fields")
             # Extract category from sink key (e.g., "data-storage:influx" -> "influx")
             if ":" in sink:
                 category = sink.split(":", 1)[1]
@@ -257,12 +315,38 @@ class TransformerService:
                 category = sink
             for field_name in source_config.allowed_fields[sink]:
                 fields_with_category.append({"name": field_name, "type": "string", "category": category})
+        # 4. Collect fields from all component-specific keys in allowed_fields
+        # (e.g., "ingestion-service:producer1", "ingestion-service:label1", etc.)
+        # This handles dynamic field discovery where fields are registered under sub-categories
+        elif source_config.allowed_fields:
+            component_prefix = f"{source_component_id}:"
+            logger.info(f"No direct match found, checking for component-specific keys with prefix '{component_prefix}'")
+            matching_keys = [k for k in source_config.allowed_fields.keys() if k.startswith(component_prefix)]
+            if matching_keys:
+                # Collect all fields from all matching keys, using the suffix as category
+                seen = set()
+                for key in matching_keys:
+                    category = key.split(":", 1)[1] if ":" in key else "default"
+                    for field_name in source_config.allowed_fields[key]:
+                        if field_name not in seen:
+                            seen.add(field_name)
+                            fields_with_category.append({"name": field_name, "type": "string", "category": category})
+                logger.info(f"Collected {len(fields_with_category)} fields from {len(matching_keys)} keys with prefix {component_prefix}")
+
+            # BUG FIX: If matching keys existed but all had empty field lists (component
+            # registered before data arrived), fall back to data_columns so we still
+            # surface whatever the component declared at registration time.
+            if not fields_with_category:
+                logger.info(f"allowed_fields keys matched but yielded 0 fields, falling back to data_columns")
+                for field_name in source_config.attributes.get("data_columns", []):
+                    fields_with_category.append({"name": field_name, "type": "string"})
+        # 5. No categories - just return fields from data_columns without category
         else:
-            # 2. No categories - just return fields from data_columns without category
+            logger.info(f"No allowed_fields found, using data_columns as fallback")
             for field_name in source_config.attributes.get("data_columns", []):
                 fields_with_category.append({"name": field_name, "type": "string"})
 
-        # 3. For ML models, add input_fields and output_fields with categories
+        # 6. For ML models, add input_fields and output_fields with categories
         if source_config.component_type == "ml_agent":
             for field_name in source_config.attributes.get("input_fields", []):
                 fields_with_category.append({"name": field_name, "type": "string", "category": "input"})
@@ -277,8 +361,10 @@ class TransformerService:
                 seen_names.add(f["name"])
                 unique_fields.append(f)
 
-        # Cache the results
-        self._field_cache[pipeline_key] = unique_fields
+        # Only cache non-empty results.  Empty means the component likely hasn't
+        # received data yet; caching it would hide the fields once they appear.
+        if unique_fields:
+            self._field_cache[pipeline_key] = unique_fields
 
         logger.info(f"Discovered {len(unique_fields)} fields for {pipeline_key} from component registry")
         return unique_fields

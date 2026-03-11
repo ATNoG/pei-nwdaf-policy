@@ -74,6 +74,11 @@ async def lifespan(app: FastAPI):
     transformer_service = TransformerService(policy_engine, config, permit_client)
     ml_model_service = MLModelService(policy_engine)
 
+    # Wire transformer service into component service so that the field
+    # discovery cache is invalidated whenever a component re-registers
+    # (prevents stale empty-field results from persisting).
+    component_service.set_transformer_service(transformer_service)
+
     # Load transformer pipelines from file
     try:
         await transformer_service.load_pipelines_from_file()

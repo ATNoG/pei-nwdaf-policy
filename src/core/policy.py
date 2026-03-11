@@ -264,16 +264,28 @@ class PolicyEngine:
             # Determine which user to check:
             # - If source is a registered component, check if source can send to sink
             # - If source is not registered (e.g., infrastructure like Kafka), check sink permissions
+            # - If source has resource type (e.g., "data-storage:influx"), use base component for check
             user_to_check = source_id
             check_sink_permissions = False
 
-            if source_id not in self.components:
-                # Source is not a registered component (e.g., Kafka)
+            # Extract base component from resource-typed source (e.g., "data-storage:influx" -> "data-storage")
+            source_component = source_id.split(":")[0] if ":" in source_id else source_id
+
+            if source_component not in self.components:
+                # Source (or its base component) is not a registered component (e.g., Kafka)
                 # Fall back to checking if the sink has permission to perform the action
                 user_to_check = sink_component
                 check_sink_permissions = True
+            else:
+                # Source component is registered - use it for the policy check
+                user_to_check = source_component
 
             # Perform the policy check
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"PERMIT CHECK: user={user_to_check}, action={action}, resource_type={data_type}, resource_id={sink_id}")
+            logger.info(f"PERMIT CHECK: check_sink_permissions={check_sink_permissions}, source_id={source_id}, sink_component={sink_component}")
+
             permitted = await self.permit.check(
                 user=user_to_check,
                 action=action,
@@ -284,6 +296,8 @@ class PolicyEngine:
                     "check_sink_permissions": check_sink_permissions
                 }
             )
+
+            logger.info(f"PERMIT RESULT: permitted={permitted}")
 
             if not permitted:
                 if check_sink_permissions:
