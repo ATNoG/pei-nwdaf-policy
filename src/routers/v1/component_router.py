@@ -11,7 +11,7 @@ from src.models.schemas import (
     ErrorResponse
 )
 from src.services.component_service import ComponentService
-from typing import cast
+from typing import cast, Dict, Any
 
 
 def get_component_service() -> ComponentService:
@@ -20,6 +20,67 @@ def get_component_service() -> ComponentService:
 
 
 router = APIRouter(prefix="/components", tags=["components"])
+
+
+# ==================== Persistence / Restore Endpoints ====================
+# NOTE: These MUST come before /{component_id} to avoid route conflicts
+
+@router.post("/restore", response_model=Dict[str, Any])
+async def restore_components_from_permit(
+    component_service: ComponentService = Depends(get_component_service)
+) -> Dict[str, Any]:
+    """
+    Restore previously registered components from Permit.io.
+
+    This is useful when the local component file is missing or stale.
+    It reads all Permit.io users that have a `component_type` attribute
+    and re-creates their in-memory ComponentConfig + persists to file.
+
+    Returns:
+        Status and number of components restored
+    """
+    try:
+        restored = await component_service.restore_from_permit()
+        total = len(component_service.policy_engine.components)
+        return {
+            "status": "success",
+            "restored_count": restored,
+            "total_components": total,
+            "message": f"Restored {restored} component(s) from Permit.io ({total} total in registry)"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "restore_failed", "message": str(e)}
+        )
+
+
+@router.post("/persist", response_model=Dict[str, Any])
+async def persist_components(
+    component_service: ComponentService = Depends(get_component_service)
+) -> Dict[str, Any]:
+    """
+    Force-save all current in-memory components to the local JSON file.
+
+    Normally this happens automatically on every registration, but this
+    endpoint allows a manual trigger.
+
+    Returns:
+        Status and number of components saved
+    """
+    try:
+        await component_service._save_components_to_file()
+        total = len(component_service.policy_engine.components)
+        return {
+            "status": "success",
+            "saved_count": total,
+            "message": f"Persisted {total} component(s) to local file"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "persist_failed", "message": str(e)}
+        )
 
 
 @router.post("", response_model=ComponentResponse, status_code=status.HTTP_201_CREATED)

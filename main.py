@@ -86,6 +86,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to load transformer pipelines: {e}")
 
+    # Registry starts empty — only components that actively register themselves
+    # (i.e. are actually running) will appear. No restore from Permit.io or JSON
+    # so stale / test components from previous runs never pollute the list.
+    logger.info("Component registry starting empty — live components will register on connect")
+
     # Register Kafka as infrastructure component
     kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     try:

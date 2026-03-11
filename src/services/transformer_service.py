@@ -295,17 +295,8 @@ class TransformerService:
                 logger.warning(f"Resource type {source_key} not found in allowed_fields, using data_columns")
                 for field_name in source_config.attributes.get("data_columns", []):
                     fields_with_category.append({"name": field_name, "type": "string"})
-        # 2. Check for wildcard pattern {"*": ["*"]} - means any sink, all fields
-        elif "*" in source_config.allowed_fields:
-            logger.info(f"Found wildcard pattern in allowed_fields")
-            # Return the sink's data_columns as available fields
-            # (kafka can produce whatever fields the sink accepts)
-            sink_component_id = sink.split(":")[0] if ":" in sink else sink
-            sink_config = self.policy_engine.get_component(sink_component_id)
-            if sink_config and sink_config.attributes.get("data_columns"):
-                for field_name in sink_config.attributes["data_columns"]:
-                    fields_with_category.append({"name": field_name, "type": "string"})
-        # 3. Check if component has fields in its allowed_fields for this specific sink
+        # 2. Check if component has fields in its allowed_fields for this specific sink
+        #    (moved BEFORE wildcard so explicit sink mappings take priority)
         elif sink in source_config.allowed_fields:
             logger.info(f"Found sink '{sink}' in allowed_fields")
             # Extract category from sink key (e.g., "data-storage:influx" -> "influx")
@@ -315,6 +306,23 @@ class TransformerService:
                 category = sink
             for field_name in source_config.allowed_fields[sink]:
                 fields_with_category.append({"name": field_name, "type": "string", "category": category})
+        # 3. Check for wildcard pattern {"*": [...]} - means any sink, all fields
+        #    (moved AFTER direct sink match so explicit mappings are preferred)
+        elif "*" in source_config.allowed_fields:
+            logger.info(f"Found wildcard pattern in allowed_fields")
+            # Use the source's own wildcard fields first; only fall back to
+            # sink data_columns when the wildcard value is the sentinel ["*"].
+            wildcard_fields = source_config.allowed_fields["*"]
+            if wildcard_fields and wildcard_fields != ["*"]:
+                for field_name in wildcard_fields:
+                    fields_with_category.append({"name": field_name, "type": "string"})
+            else:
+                # Sentinel wildcard — return the sink's data_columns as available fields
+                sink_component_id = sink.split(":")[0] if ":" in sink else sink
+                sink_config = self.policy_engine.get_component(sink_component_id)
+                if sink_config and sink_config.attributes.get("data_columns"):
+                    for field_name in sink_config.attributes["data_columns"]:
+                        fields_with_category.append({"name": field_name, "type": "string"})
         # 4. Collect fields from all component-specific keys in allowed_fields
         # (e.g., "ingestion-service:producer1", "ingestion-service:label1", etc.)
         # This handles dynamic field discovery where fields are registered under sub-categories
