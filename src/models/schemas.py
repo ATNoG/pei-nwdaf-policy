@@ -46,7 +46,16 @@ class ComponentRegistrationRequest(BaseModel):
     """Request to register a component."""
     component_id: str = Field(..., description="Unique component identifier")
     component_type: ComponentType = Field(..., description="Type of component")
-    role: Optional[str] = Field(None, description="Role to assign")
+    role: Optional[str] = Field(None, description="Primary role to assign")
+    additional_roles: Optional[List[str]] = Field(
+        None,
+        description="Additional roles beyond primary (for differentiated policies)"
+    )
+    permit_user_key: Optional[str] = Field(
+        None,
+        description="Permit.io user key override; defaults to component_id. "
+                    "Multiple components can share one user."
+    )
     data_columns: Optional[List[str]] = Field(None, description="Data columns/field names for this component")
     auto_create_attributes: bool = Field(True, description="Auto-create attributes from columns")
     allowed_fields: Optional[Dict[str, List[str]]] = Field(None, description="Allowed fields per sink")
@@ -58,6 +67,8 @@ class ComponentResponse(BaseModel):
     component_id: str
     component_type: str
     role: Optional[str]
+    additional_roles: List[str] = Field(default_factory=list)
+    permit_user_key: Optional[str] = None
     allowed_fields: Dict[str, List[str]]
     attributes: Dict[str, Any]
 
@@ -71,11 +82,25 @@ class ComponentListResponse(BaseModel):
 
 class MLModelRegistrationRequest(BaseModel):
     """Request to register an ML model."""
-    model_id: str = Field(..., description="Unique model identifier")
+    model_id: str = Field(..., description="Unique model identifier (UUID from MLflow)")
     model_name: str = Field(..., description="Human-readable model name")
-    input_fields: List[str] = Field(..., description="Input field names")
-    output_fields: List[str] = Field(..., description="Output field names")
+    input_fields: List[str] = Field(..., description="Input field names the model reads")
+    output_fields: List[str] = Field(..., description="Output field names the model produces")
     data_type: MLDataType = Field(..., description="Data type for role assignment")
+    architecture: Optional[str] = Field(None, description="Model architecture (ann, lstm)")
+    permit_user_key: Optional[str] = Field(
+        None,
+        description="Shared Permit.io user key. Multiple models sharing this key "
+                    "get identical permissions."
+    )
+    additional_roles: Optional[List[str]] = Field(
+        None,
+        description="Additional roles beyond the default ML role"
+    )
+    window_duration_seconds: Optional[int] = Field(
+        None,
+        description="Window duration in seconds"
+    )
 
 
 class MLModelAccessRequest(BaseModel):
@@ -89,6 +114,24 @@ class MLModelAccessResponse(BaseModel):
     """Response from ML model access check."""
     allowed: bool
     reason: str
+
+
+class MLModelResponse(BaseModel):
+    """Response for a single ML model component."""
+    component_id: str
+    model_id: str
+    model_name: str
+    architecture: Optional[str] = None
+    input_fields: List[str] = Field(default_factory=list)
+    output_fields: List[str] = Field(default_factory=list)
+    data_type: str = ""
+    roles: List[str] = Field(default_factory=list)
+    permit_user_key: Optional[str] = None
+
+
+class MLModelListResponse(BaseModel):
+    """List of ML model components."""
+    models: List[MLModelResponse]
 
 
 # ==================== Transformer Schemas ====================

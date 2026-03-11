@@ -103,6 +103,8 @@ async def register_component(
             component_id=request.component_id,
             component_type=request.component_type.value,
             role=request.role,
+            additional_roles=request.additional_roles,
+            permit_user_key=request.permit_user_key,
             data_columns=request.data_columns,
             auto_create_attributes=request.auto_create_attributes,
             allowed_fields=request.allowed_fields,
@@ -113,6 +115,8 @@ async def register_component(
             component_id=config.component_id,
             component_type=config.component_type,
             role=config.role,
+            additional_roles=config.additional_roles,
+            permit_user_key=config.permit_user_key,
             allowed_fields={k: list(v) for k, v in config.allowed_fields.items()},
             attributes=config.attributes
         )
@@ -151,6 +155,8 @@ async def get_component(
         component_id=config.component_id,
         component_type=config.component_type,
         role=config.role,
+        additional_roles=config.additional_roles,
+        permit_user_key=config.permit_user_key,
         allowed_fields={k: list(v) for k, v in config.allowed_fields.items()},
         attributes=config.attributes
     )
@@ -176,6 +182,8 @@ async def list_components(
             component_id=c.component_id,
             component_type=c.component_type,
             role=c.role,
+            additional_roles=c.additional_roles,
+            permit_user_key=c.permit_user_key,
             allowed_fields={k: list(v) for k, v in c.allowed_fields.items()},
             attributes=c.attributes
         )

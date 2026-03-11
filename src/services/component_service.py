@@ -111,14 +111,18 @@ class ComponentService:
                 except (json.JSONDecodeError, TypeError):
                     data_columns = []
 
-            # Try to get the role from role assignments
+            # Try to get role(s) from role assignments
             role = None
+            additional_roles_list: List[str] = []
             try:
                 assignments = await self.permit_client.list_role_assignments(
                     user_key=comp_id
                 )
                 if assignments:
                     role = assignments[0].get("role")
+                    additional_roles_list = [
+                        a.get("role") for a in assignments[1:] if a.get("role")
+                    ]
             except Exception as e:
                 logger.debug(f"Could not fetch role for {comp_id}: {e}")
 
@@ -132,6 +136,7 @@ class ComponentService:
                 component_id=comp_id,
                 component_type=component_type,
                 role=role,
+                additional_roles=additional_roles_list,
                 allowed_fields=allowed_fields,
                 attributes=extra_attrs,
             )
@@ -160,6 +165,8 @@ class ComponentService:
         component_id: str,
         component_type: str,
         role: Optional[str] = None,
+        additional_roles: Optional[List[str]] = None,
+        permit_user_key: Optional[str] = None,
         data_columns: Optional[List[str]] = None,
         auto_create_attributes: bool = True,
         allowed_fields: Optional[dict[str, List[str]]] = None,
@@ -176,7 +183,9 @@ class ComponentService:
         Args:
             component_id: Unique component identifier
             component_type: Type of component
-            role: Optional role to assign
+            role: Optional primary role to assign
+            additional_roles: Optional additional roles beyond primary
+            permit_user_key: Optional Permit.io user key override (for sharing)
             data_columns: Optional data columns for auto-attribute creation
             auto_create_attributes: Whether to auto-create attributes
             allowed_fields: Optional allowed fields per sink
@@ -196,6 +205,8 @@ class ComponentService:
             component_id=component_id,
             component_type=component_type,
             role=role,
+            additional_roles=additional_roles or [],
+            permit_user_key=permit_user_key,
             allowed_fields=allowed_fields or {},
             attributes=component_attributes
         )

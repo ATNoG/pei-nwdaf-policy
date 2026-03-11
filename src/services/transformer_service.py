@@ -185,7 +185,7 @@ class TransformerService:
         field_list.extend(component_config.attributes.get("data_columns", []))
 
         # 2. For ML models, include input_fields and output_fields
-        if component_config.component_type == "ml_agent":
+        if component_config.component_type in ("ml_agent", "ml_model"):
             input_fields = component_config.attributes.get("input_fields", [])
             output_fields = component_config.attributes.get("output_fields", [])
             field_list.extend(input_fields)

@@ -7,6 +7,7 @@ from enum import Enum
 class ComponentType(str, Enum):
     """Types of components in the system."""
     ML_AGENT = "ml_agent"
+    ML_MODEL = "ml_model"
     DATA_SOURCE = "data_source"
     API = "api"
     STORAGE = "storage"

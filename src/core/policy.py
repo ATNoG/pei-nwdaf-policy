@@ -19,11 +19,29 @@ import asyncio
 class ComponentConfig:
     """Configuration for a component in the system."""
     component_id: str
-    component_type: str  # "ml_agent", "data_source", "api", "storage", etc.
+    component_type: str  # "ml_agent", "ml_model", "data_source", "api", "storage", etc.
     allowed_fields: dict[str, list[str]] = field(default_factory=dict)
     # allowed_fields[sink_component] = [field1, field2, ...]
     role: Optional[str] = None
+    additional_roles: list[str] = field(default_factory=list)
+    permit_user_key: Optional[str] = None
     attributes: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def all_roles(self) -> list[str]:
+        """All roles (primary + additional), deduplicated, order-preserved."""
+        roles: list[str] = []
+        if self.role:
+            roles.append(self.role)
+        for r in self.additional_roles:
+            if r not in roles:
+                roles.append(r)
+        return roles
+
+    @property
+    def effective_user_key(self) -> str:
+        """Permit.io user key. Defaults to component_id."""
+        return self.permit_user_key or self.component_id
 
 
 @dataclass
@@ -83,6 +101,12 @@ class PolicyEngine:
         """
         Register a component and sync it to Permit.io as a user (async).
 
+        Uses ``config.effective_user_key`` as the Permit.io user key so that
+        multiple components can optionally share a single Permit.io user
+        (useful for ML models that want identical permissions).
+
+        All roles returned by ``config.all_roles`` are assigned.
+
         Args:
             config: ComponentConfig with component details
 
@@ -92,31 +116,32 @@ class PolicyEngine:
         import logging
         logger = logging.getLogger(__name__)
         try:
+            user_key = config.effective_user_key
+
             # Sync component to Permit.io as a user
             user_data = {
-                "key": config.component_id,
+                "key": user_key,
                 "attributes": {
                     "component_type": config.component_type,
                     "allowed_fields": config.allowed_fields,
                     **config.attributes,
                 }
             }
-            logger.info(f"Registering component {config.component_id} with role {config.role}")
+            logger.info(f"Registering component {config.component_id} (permit user={user_key}) with roles {config.all_roles}")
             await self.permit.sync_user(user_data)
 
-            # Assign role if specified
-            if config.role:
-                logger.info(f"Assigning role {config.role} to component {config.component_id}")
+            # Assign all roles (primary + additional)
+            for role_key in config.all_roles:
                 try:
                     await self.permit.assign_role(
-                        user_key=config.component_id,
-                        role_key=config.role,
+                        user_key=user_key,
+                        role_key=role_key,
                         tenant_id="default"
                     )
+                    logger.info(f"Assigned role {role_key} to {user_key}")
                 except Exception as role_error:
                     # Log but don't fail registration if role doesn't exist
-                    logger.warning(f"Failed to assign role {config.role} to component {config.component_id}: {role_error}")
-                    logger.warning(f"Component {config.component_id} registered but role assignment skipped. Create the role in Permit.io dashboard or API.")
+                    logger.warning(f"Failed to assign role {role_key} to {user_key}: {role_error}")
 
             self.components[config.component_id] = config
             logger.info(f"Successfully registered component {config.component_id}")
@@ -276,9 +301,14 @@ class PolicyEngine:
                 # Fall back to checking if the sink has permission to perform the action
                 user_to_check = sink_component
                 check_sink_permissions = True
+                # Resolve effective_user_key for the sink if it exists
+                sink_config = self.components.get(sink_component)
+                if sink_config:
+                    user_to_check = sink_config.effective_user_key
             else:
-                # Source component is registered - use it for the policy check
-                user_to_check = source_component
+                # Source component is registered - resolve effective_user_key
+                source_config = self.components[source_component]
+                user_to_check = source_config.effective_user_key
 
             # Perform the policy check
             import logging
@@ -488,12 +518,13 @@ class PolicyEngine:
             if not component:
                 return not self.config.REQUIRE_REGISTRATION
 
-            if component.role != expected_role:
+            if expected_role not in component.all_roles:
                 return False
 
-            # Check Permit.io permissions
+            # Check Permit.io permissions using effective user key
+            user_key = component.effective_user_key
             permitted = await self.permit.check(
-                user=component_id,
+                user=user_key,
                 action="inference",
                 resource={"type": f"model:{model_data_type}", "id": model_id}
             )
