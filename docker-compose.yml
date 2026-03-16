@@ -13,6 +13,7 @@ services:
       - DECISION_CACHE_TTL=${DECISION_CACHE_TTL:-60}
       - REQUIRE_REGISTRATION=${REQUIRE_REGISTRATION:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
     volumes:
       - ./configs:/app/configs
     networks:
@@ -29,7 +30,7 @@ services:
         condition: service_started
 
   permit:
-    image: permitio/pdp-v2:latest
+    image: permitio/pdp-v2:0.9.9
     container_name: permit-pdp
     ports:
       - "7766:7000"
@@ -47,4 +48,4 @@ services:
 
 networks:
   nwdaf-network:
-    external: true
+    name: nwdaf-network
