@@ -36,7 +36,7 @@ services:
       - "7766:7000"
     environment:
       - PDP_DEBUG=${PDP_DEBUG:-False}
-      - PDP_API_KEY=${PDP_API_KEY}
+      - PDP_API_KEY=${PERMIT_API_KEY}
     networks:
       - nwdaf-network
     restart: unless-stopped
