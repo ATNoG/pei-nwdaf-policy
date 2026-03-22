@@ -138,7 +138,7 @@ Base path: `/api/v1`
 
 ## Notes
 
-- **Permit.io Setup**: Before running, configure resources and roles in the [Permit.io](https://app.permit.io/) dashboard or use the provided configs in `configs/`
+- **Permit.io Setup**: Before running, configure resources and roles in the [Permit.io](https://app.permit.io/) dashboard
 - **Component IDs**: Must be unique and consistent across the system
 - **Field Discovery**: Components should declare data fields during registration
 - **Testing**: Always test with `POLICY_ENABLED=false` before enabling in production
