@@ -75,7 +75,7 @@ from policy_client import PolicyClient
 
 policy_client = PolicyClient(
     service_url=POLICY_SERVICE_URL,
-    component_id="ingestion-service",
+    component_id="some_id",
     enable_policy=ENABLE_POLICY
 )
 
@@ -122,7 +122,7 @@ Base path: `/api/v1`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PERMIT_API_KEY` | ... | Permit.io API key (required) |
+| `PERMIT_API_KEY` | - | Permit.io API key (required) |
 | `PERMIT_PDP_URL` | `http://permit:7000` | Permit.io PDP endpoint |
 | `POLICY_ENABLED` | `false` | Enable policy enforcement |
 | `DECISION_CACHE_TTL` | `60` | Policy decision cache TTL (seconds) |
