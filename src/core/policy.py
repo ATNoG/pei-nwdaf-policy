@@ -136,7 +136,7 @@ class PolicyEngine:
                     await self.permit.assign_role(
                         user_key=user_key,
                         role_key=role_key,
-                        tenant_id="default"
+                        tenant_id=self.config.PERMIT_DEFAULT_TENANT_ID
                     )
                     logger.info(f"Assigned role {role_key} to {user_key}")
                 except Exception as role_error:

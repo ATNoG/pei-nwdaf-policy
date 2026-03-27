@@ -117,8 +117,7 @@ async def get_stats(
 
 @router.post("/cache/clear")
 async def clear_cache(
-    policy_service: PolicyService = Depends(get_policy_service),
-    transformer_service = None
+    policy_service: PolicyService = Depends(get_policy_service)
 ) -> dict:
     """
     Clear the policy decision cache.
@@ -131,8 +130,7 @@ async def clear_cache(
     """
     policy_service.clear_cache()
 
-    # Also clear transformer field cache
-    from src.main import transformer_service
-    transformer_service._field_cache.clear()
+    # Note: Transformer service cache clearing should be handled by main.py
+    # or via a separate endpoint in the transformer router
 
     return {"status": "success", "message": "Cache cleared"}

@@ -11,19 +11,10 @@ import logging
 from typing import List, Optional
 
 from src.core.policy import ComponentConfig, PolicyEngine
+from src.core.config import PolicyConfig
 from src.models.enums import MLDataType
 
 logger = logging.getLogger(__name__)
-
-# ── Constants ────────────────────────────────────────────────────────────────
-
-ML_DEFAULT_ROLE = "ML"
-ML_COMPONENT_PREFIX = "ml-"
-
-
-def _model_component_id(model_name: str) -> str:
-    """Derive the deterministic component ID for a model name."""
-    return f"{ML_COMPONENT_PREFIX}{model_name}"
 
 
 class MLModelService:
@@ -42,6 +33,19 @@ class MLModelService:
 
     def __init__(self, policy_engine: PolicyEngine):
         self.policy_engine = policy_engine
+        self.config = policy_engine.config
+
+    def _get_ml_default_role(self) -> str:
+        """Get the default ML role from config."""
+        return self.config.ML_DEFAULT_ROLE
+
+    def _get_ml_component_prefix(self) -> str:
+        """Get the ML component prefix from config."""
+        return self.config.ML_COMPONENT_PREFIX
+
+    def _model_component_id(self, model_name: str) -> str:
+        """Derive the deterministic component ID for a model name."""
+        return f"{self._get_ml_component_prefix()}{model_name}"
 
     # ── Registration ─────────────────────────────────────────────────────
 
@@ -74,7 +78,7 @@ class MLModelService:
         Returns:
             The component_id assigned to the model (``ml-{model_name}``).
         """
-        component_id = _model_component_id(model_name)
+        component_id = self._model_component_id(model_name)
 
         data_type_value = data_type.value if isinstance(data_type, MLDataType) else str(data_type)
 
@@ -97,7 +101,7 @@ class MLModelService:
         config = ComponentConfig(
             component_id=component_id,
             component_type="ml_model",
-            role=ML_DEFAULT_ROLE,
+            role=self._get_ml_default_role(),
             additional_roles=additional_roles or [],
             permit_user_key=permit_user_key,
             allowed_fields={"default": output_fields},
@@ -139,7 +143,7 @@ class MLModelService:
         Returns:
             True if the model was found and removed, False otherwise.
         """
-        component_id = _model_component_id(model_name)
+        component_id = self._model_component_id(model_name)
         removed = self.policy_engine.unregister_component(component_id)
         if removed:
             logger.info("Unregistered ML model component %s", component_id)

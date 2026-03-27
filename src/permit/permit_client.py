@@ -3,9 +3,14 @@ Permit.io client wrapper with lazy import to avoid compatibility issues.
 """
 import os
 import asyncio
-from typing import Any, Optional
+import json
+import logging
+from pathlib import Path
+from typing import Any, Optional, Set
 from src.core.config import PolicyConfig
 from src.core.exceptions import PermitConnectionError
+
+logger = logging.getLogger(__name__)
 
 
 class PermitClient:
@@ -17,6 +22,77 @@ class PermitClient:
         self.config = config
         self._permit = None
         self._api = None
+        self._attribute_cache: Set[str] = set()
+        self._attribute_cache_path: Optional[Path] = None
+
+        # Load attribute cache on initialization if enabled
+        if self.config.PERMIT_ENABLE_ATTRIBUTE_CACHING:
+            self._attribute_cache_path = Path(self.config.PERMIT_ATTRIBUTE_CACHE_PATH)
+            self._load_attribute_cache()
+
+    async def _preload_existing_attributes(self) -> None:
+        """
+        Preload existing resource attributes from Permit.io to avoid duplicate API calls.
+
+        This fetches all existing attributes for the 'data' resource and populates the cache,
+        preventing unnecessary API calls for attributes that already exist.
+        """
+        if not self.config.PERMIT_ENABLE_ATTRIBUTE_CACHING:
+            return
+
+        try:
+            # Import the list method for resource attributes
+            from permit import ResourceAttributeRead
+
+            # List all attributes for the 'data' resource
+            attributes = await self.api.resource_attributes.list("data")
+
+            # Populate cache with existing attributes
+            for attr in attributes:
+                cache_key = f"data:{attr.key}"
+                self._attribute_cache.add(cache_key)
+
+            # Save to disk
+            if self._attribute_cache_path:
+                self._save_attribute_cache()
+
+            logger.info(f"Preloaded {len(attributes)} existing attributes from Permit.io into cache")
+        except Exception as e:
+            logger.warning(f"Failed to preload existing attributes from Permit.io: {e}")
+            # Continue without preloading - cache will be populated as we create attributes
+
+    def _load_attribute_cache(self) -> None:
+        """Load attribute cache from JSON file if it exists."""
+        if not self._attribute_cache_path or not self._attribute_cache_path.exists():
+            logger.debug("No attribute cache file found, starting with empty cache")
+            return
+
+        try:
+            with open(self._attribute_cache_path, "r") as f:
+                cached_attrs = json.load(f)
+                self._attribute_cache = set(cached_attrs)
+            logger.info(f"Loaded {len(self._attribute_cache)} attributes from cache")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load attribute cache: {e}, starting with empty cache")
+            self._attribute_cache = set()
+
+    def _save_attribute_cache(self) -> None:
+        """Save attribute cache to JSON file."""
+        if not self._attribute_cache_path:
+            return
+
+        try:
+            self._attribute_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._attribute_cache_path, "w") as f:
+                json.dump(list(self._attribute_cache), f, indent=2)
+            logger.debug(f"Saved {len(self._attribute_cache)} attributes to cache")
+        except IOError as e:
+            logger.warning(f"Failed to save attribute cache: {e}")
+
+    def invalidate_attribute_cache(self) -> None:
+        """Clear the attribute cache (use with caution)."""
+        self._attribute_cache.clear()
+        logger.info("Attribute cache invalidated")
 
     def _get_permit_class(self):
         """Lazy import of Permit class to avoid Python 3.14 compatibility issues."""
@@ -122,7 +198,7 @@ class PermitClient:
             raise PermitConnectionError(f"Failed to sync user: {e}")
 
     async def assign_role(
-        self, user_key: str, role_key: str, tenant_id: str = "default"
+        self, user_key: str, role_key: str, tenant_id: Optional[str] = None
     ) -> None:
         """
         Assign a role to a user (async).
@@ -130,10 +206,14 @@ class PermitClient:
         Args:
             user_key: User/component key
             role_key: Role key
-            tenant_id: Tenant ID (default: "default")
+            tenant_id: Tenant ID (defaults to config.PERMIT_DEFAULT_TENANT_ID)
         """
         import logging
         logger = logging.getLogger(__name__)
+
+        if tenant_id is None:
+            tenant_id = self.config.PERMIT_DEFAULT_TENANT_ID
+
         try:
             # Import RoleAssignmentCreate model
             from permit.api.models import RoleAssignmentCreate
@@ -198,12 +278,22 @@ class PermitClient:
         """
         Create a resource attribute in Permit.io (async).
 
+        Uses an in-memory cache to avoid duplicate API calls. The cache is
+        persisted to disk for future restarts.
+
         Args:
             resource_key: Resource key
             attribute_key: Attribute key
             attribute_type: Attribute type (string, number, boolean, etc.)
             description: Attribute description
         """
+        cache_key = f"{resource_key}:{attribute_key}"
+
+        # Check cache first if enabled
+        if self.config.PERMIT_ENABLE_ATTRIBUTE_CACHING and cache_key in self._attribute_cache:
+            logger.debug(f"Attribute {cache_key} found in cache, skipping API call")
+            return
+
         try:
             from permit import ResourceAttributeCreate
 
@@ -217,15 +307,25 @@ class PermitClient:
                 resource_key=resource_key,
                 attribute_data=attribute_data,
             )
+
+            # Add to cache after successful creation
+            if self.config.PERMIT_ENABLE_ATTRIBUTE_CACHING:
+                self._attribute_cache.add(cache_key)
+                self._save_attribute_cache()
+
         except Exception as e:
-            # Ignore if already exists
-            if "already exists" not in str(e):
+            # If already exists, add to cache anyway (it's there)
+            if "already exists" in str(e):
+                if self.config.PERMIT_ENABLE_ATTRIBUTE_CACHING:
+                    self._attribute_cache.add(cache_key)
+                    self._save_attribute_cache()
+            else:
                 raise PermitConnectionError(f"Failed to create attribute: {e}")
 
     async def list_users(
         self,
         page: int = 1,
-        per_page: int = 100,
+        per_page: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """
         List all users (components) synced to Permit.io.
@@ -235,13 +335,14 @@ class PermitClient:
 
         Args:
             page: Page number (1-based)
-            per_page: Number of results per page
+            per_page: Number of results per page (defaults to config value)
 
         Returns:
             List of user dictionaries with key, attributes, etc.
         """
-        import logging
-        logger = logging.getLogger(__name__)
+        if per_page is None:
+            per_page = self.config.PERMIT_PAGINATION_PER_PAGE
+
         try:
             paginated = await self.api.users.list(page=page, per_page=per_page)
             result = []
@@ -291,20 +392,24 @@ class PermitClient:
     async def list_role_assignments(
         self,
         user_key: str | None = None,
-        tenant_id: str = "default",
+        tenant_id: Optional[str] = None,
     ) -> list[dict[str, str]]:
         """
         List role assignments, optionally filtered by user.
 
         Args:
             user_key: Optional user key to filter by
-            tenant_id: Tenant ID (default: "default")
+            tenant_id: Tenant ID (defaults to config.PERMIT_DEFAULT_TENANT_ID)
 
         Returns:
             List of role assignment dicts with 'user', 'role', 'tenant'
         """
         import logging
         logger = logging.getLogger(__name__)
+
+        if tenant_id is None:
+            tenant_id = self.config.PERMIT_DEFAULT_TENANT_ID
+
         try:
             kwargs = {"tenant_key": tenant_id}
             if user_key:
@@ -331,13 +436,13 @@ class PermitClient:
         """
         asyncio.run(self.sync_user(user_data))
 
-    def assign_role_sync(self, user_key: str, role_key: str, tenant_id: str = "default") -> None:
+    def assign_role_sync(self, user_key: str, role_key: str, tenant_id: Optional[str] = None) -> None:
         """
         Synchronous wrapper for assign_role.
 
         Args:
             user_key: User/component key
             role_key: Role key
-            tenant_id: Tenant ID (default: "default")
+            tenant_id: Tenant ID (defaults to config.PERMIT_DEFAULT_TENANT_ID)
         """
         asyncio.run(self.assign_role(user_key, role_key, tenant_id))

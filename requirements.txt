@@ -18,5 +18,5 @@ requests==2.32.3
 confluent_kafka==2.12.2
 
 # Development dependencies
-bandit==1.8.0
-safety==2.3.5
+bandit
+safety==3.7.0
