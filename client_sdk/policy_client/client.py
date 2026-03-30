@@ -597,6 +597,29 @@ class PolicyClient:
             logger.error(f"Failed to register ML model: {e}")
             return False
 
+    async def unregister_ml_model(self, model_name: str) -> bool:
+        """
+        Unregister an ML model from the Policy Service.
+
+        Calls ``DELETE /api/v1/ml/models/{model_name}``.
+
+        Args:
+            model_name: Human-readable model name (used to derive component ID).
+
+        Returns:
+            True if successful, False on error.
+        """
+        try:
+            await self._request(
+                "DELETE",
+                f"/api/v1/ml/models/{model_name}",
+            )
+            logger.info(f"ML model unregistered: {model_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unregister ML model: {e}")
+            return False
+
     def clear_cache(self) -> None:
         """Clear the decision cache."""
         self.cache.clear()
@@ -781,6 +804,41 @@ class SyncPolicyClient:
         self._heartbeat_thread = None
         self._heartbeat_stop = None
         logger.info(f"Sync heartbeat stopped for {self._async_client.component_id}")
+
+    def register_ml_model(
+        self,
+        model_id: str,
+        model_name: str,
+        input_fields: list[str],
+        output_fields: list[str],
+        data_type: str,
+        architecture: str | None = None,
+        permit_user_key: str | None = None,
+        additional_roles: list[str] | None = None,
+        window_duration_seconds: int | None = None,
+    ) -> bool:
+        """Synchronous version of register_ml_model."""
+        return self._run_coroutine(
+            self._async_client.register_ml_model(
+                model_id,
+                model_name,
+                input_fields,
+                output_fields,
+                data_type,
+                architecture,
+                permit_user_key,
+                additional_roles,
+                window_duration_seconds,
+            ),
+            timeout=self._async_client.registration_timeout,
+        )
+
+    def unregister_ml_model(self, model_name: str) -> bool:
+        """Synchronous version of unregister_ml_model."""
+        return self._run_coroutine(
+            self._async_client.unregister_ml_model(model_name),
+            timeout=self._async_client.registration_timeout,
+        )
 
     def clear_cache(self) -> None:
         """Clear the decision cache."""
