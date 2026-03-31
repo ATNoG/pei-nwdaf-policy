@@ -377,8 +377,14 @@ class PolicyClient:
                     json=data,
                     timeout=aiohttp.ClientTimeout(total=effective_timeout)
                 ) as response:
-                    response.raise_for_status()
-                    return await response.json()
+                    # Capture response body for better error messages
+                    response_text = await response.text()
+                    if response.status >= 400:
+                        raise Exception(
+                            f"HTTP {response.status}, message='{response.reason}', "
+                            f"url='{url}', body='{response_text[:500]}'"
+                        )
+                    return json.loads(response_text) if response_text else {}
 
         except asyncio.TimeoutError:
             raise Exception(f"Timeout connecting to Policy Service: {url}")
