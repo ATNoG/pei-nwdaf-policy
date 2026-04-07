@@ -146,6 +146,10 @@ class PolicyClient:
         self._last_pipeline_version: int | None = None  # None = never checked
         self._last_version_check_time: float = 0.0  # monotonic timestamp
 
+        # Compiled pipeline object cache — plain dict, invalidated on version change.
+        # Avoids rebuilding TransformerPipeline from config on every record.
+        self._pipeline_obj_cache: dict[str, Any] = {}
+
         # Field cache key for callable sources
         self._fields_cache_key = f"{self.component_id}:fields"
 
@@ -501,7 +505,7 @@ class PolicyClient:
         # Apply transformations locally
         if pipeline_config.get("steps"):
             try:
-                transformed_data = self._apply_pipeline(data, pipeline_config)
+                transformed_data = self._apply_pipeline_cached(source_id, sink_id, data, pipeline_config)
                 transformations = [s["type"] for s in pipeline_config["steps"]]
             except Exception as e:
                 logger.error(f"Failed to apply pipeline: {e}")
@@ -584,21 +588,34 @@ class PolicyClient:
                 ]
                 for k in pipeline_keys:
                     del self.cache[k]
+                # Also evict compiled pipeline objects
+                evicted_objs = len(self._pipeline_obj_cache)
+                self._pipeline_obj_cache.clear()
                 self._last_pipeline_version = current_version
                 logger.info(
                     f"Pipeline version changed to {current_version}, "
-                    f"evicted {len(pipeline_keys)} cached pipeline(s)"
+                    f"evicted {len(pipeline_keys)} cached config(s) "
+                    f"and {evicted_objs} compiled pipeline(s)"
                 )
 
         except Exception as e:
             # Version check failure should not break the hot path
             logger.debug(f"Pipeline version check failed: {e}")
 
-    def _apply_pipeline(self, data: dict, pipeline_config: dict) -> dict:
-        """Apply transformations locally using the transformer pipeline."""
+    def _apply_pipeline_cached(self, source_id: str, sink_id: str, data: dict, pipeline_config: dict) -> dict:
+        """Apply transformations using a cached TransformerPipeline object.
+
+        The compiled pipeline is cached by (source_id, sink_id) and reused
+        across records instead of rebuilding from config on every call.
+        """
         from policy_client.transformers import TransformerPipeline
 
-        pipeline = TransformerPipeline.from_config(pipeline_config)
+        cache_key = f"pipeline_obj:{source_id}:{sink_id}"
+        pipeline = self._pipeline_obj_cache.get(cache_key)
+        if pipeline is None:
+            pipeline = TransformerPipeline.from_config(pipeline_config)
+            self._pipeline_obj_cache[cache_key] = pipeline
+
         return pipeline.execute_sync(data)
 
     async def register_ml_model(
