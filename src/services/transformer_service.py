@@ -37,6 +37,10 @@ class TransformerService:
         # Cache for discovered fields (keyed by pipeline_key or component_id)
         self._field_cache: Dict[str, List[dict]] = {}
 
+        # Monotonically increasing version counter — bumped on every pipeline
+        # create / update / delete so SDK clients can detect stale cached configs.
+        self._pipeline_version: int = 0
+
     async def create_pipeline(
         self,
         pipeline_id: str,
@@ -56,6 +60,7 @@ class TransformerService:
         pipeline = TransformerPipeline.from_config(pipeline_config)
 
         self.policy_engine.set_transformer_pipeline(pipeline_id, pipeline)
+        self._pipeline_version += 1
 
         # Save to file if path is configured
         if self.config_path:
@@ -87,6 +92,7 @@ class TransformerService:
         """
         if pipeline_id in self.policy_engine.transformer_pipelines:
             del self.policy_engine.transformer_pipelines[pipeline_id]
+            self._pipeline_version += 1
             return True
         return False
 
@@ -137,6 +143,9 @@ class TransformerService:
                 pipeline = TransformerPipeline.from_config(config)
                 self.policy_engine.set_transformer_pipeline(pipeline_id, pipeline)
                 pipelines[pipeline_id] = pipeline
+
+            if pipelines:
+                self._pipeline_version += 1
 
             return pipelines
 

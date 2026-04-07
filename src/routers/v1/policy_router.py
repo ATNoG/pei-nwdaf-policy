@@ -12,6 +12,8 @@ from src.models.schemas import (
     ErrorResponse
 )
 from src.services.policy_service import PolicyService
+from src.services.transformer_service import TransformerService
+from src.routers.v1.transformer_router import get_transformer_service
 
 
 def get_policy_service() -> PolicyService:
@@ -118,21 +120,19 @@ async def get_stats(
 @router.post("/cache/clear")
 async def clear_cache(
     policy_service: PolicyService = Depends(get_policy_service),
-    transformer_service = None
+    transformer_service: TransformerService = Depends(get_transformer_service)
 ) -> dict:
     """
     Clear the policy decision cache.
 
     Args:
         policy_service: Policy service instance
+        transformer_service: Transformer service instance
 
     Returns:
         Success message
     """
     policy_service.clear_cache()
-
-    # Also clear transformer field cache
-    from src.main import transformer_service
     transformer_service._field_cache.clear()
 
     return {"status": "success", "message": "Cache cleared"}
