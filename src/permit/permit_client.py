@@ -41,9 +41,6 @@ class PermitClient:
             return
 
         try:
-            # Import the list method for resource attributes
-            from permit import ResourceAttributeRead
-
             # List all attributes for the 'data' resource
             attributes = await self.api.resource_attributes.list("data")
 
