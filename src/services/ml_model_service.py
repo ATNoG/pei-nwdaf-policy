@@ -11,7 +11,6 @@ import logging
 from typing import List, Optional
 
 from src.core.policy import ComponentConfig, PolicyEngine
-from src.core.config import PolicyConfig
 from src.models.enums import MLDataType
 
 logger = logging.getLogger(__name__)
