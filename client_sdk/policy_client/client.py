@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -140,6 +141,10 @@ class PolicyClient:
 
         # Decision cache
         self.cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
+
+        # Pipeline version tracking — used to detect stale cached configs
+        self._last_pipeline_version: int | None = None  # None = never checked
+        self._last_version_check_time: float = 0.0  # monotonic timestamp
 
         # Field cache key for callable sources
         self._fields_cache_key = f"{self.component_id}:fields"
@@ -522,10 +527,22 @@ class PolicyClient:
         )
 
     async def _get_pipeline_config(self, source_id: str, sink_id: str) -> dict:
-        """Fetch and cache pipeline configuration."""
+        """Fetch and cache pipeline configuration.
+
+        Checks the server-side pipeline version before returning a cached
+        result.  If the version has changed since the last fetch, all
+        pipeline cache entries are evicted so the next fetch hits the server.
+        """
         cache_key = f"pipeline:{source_id}:{sink_id}"
+
+        # Before returning a cached pipeline, verify the version is still current.
+        # The version check itself is cached for 5 seconds to avoid hammering
+        # the server on every data record.
         if cached := self.cache.get(cache_key):
-            return cached
+            await self._check_pipeline_version()
+            # Re-check — _check_pipeline_version may have cleared the cache
+            if cached := self.cache.get(cache_key):
+                return cached
 
         response = await self._request(
             "GET",
@@ -533,6 +550,49 @@ class PolicyClient:
         )
         self.cache[cache_key] = response
         return response
+
+    async def _check_pipeline_version(self) -> None:
+        """Check the server-side pipeline version.
+
+        If it differs from the last-seen version, evict all ``pipeline:*``
+        cache entries so subsequent calls fetch fresh configs.
+        Rate-limited to at most once every 5 seconds.
+        """
+        # Rate-limit: only check at most once every 5 seconds
+        now = time.monotonic()
+        if now - self._last_version_check_time < 5.0:
+            return
+
+        try:
+            resp = await self._request(
+                "GET",
+                "/api/v1/transformers/version",
+            )
+            self._last_version_check_time = time.monotonic()
+            current_version = resp.get("version", 0)
+
+            if self._last_pipeline_version is None:
+                # First check — just remember the version
+                self._last_pipeline_version = current_version
+                return
+
+            if current_version != self._last_pipeline_version:
+                # Version changed — evict all pipeline cache entries
+                pipeline_keys = [
+                    k for k in list(self.cache.keys())
+                    if isinstance(k, str) and k.startswith("pipeline:")
+                ]
+                for k in pipeline_keys:
+                    del self.cache[k]
+                self._last_pipeline_version = current_version
+                logger.info(
+                    f"Pipeline version changed to {current_version}, "
+                    f"evicted {len(pipeline_keys)} cached pipeline(s)"
+                )
+
+        except Exception as e:
+            # Version check failure should not break the hot path
+            logger.debug(f"Pipeline version check failed: {e}")
 
     def _apply_pipeline(self, data: dict, pipeline_config: dict) -> dict:
         """Apply transformations locally using the transformer pipeline."""
