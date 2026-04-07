@@ -64,6 +64,13 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize Permit.io client: {e}")
         raise
 
+    # Preload existing attributes from Permit.io to avoid duplicate API calls
+    if config.PERMIT_ENABLE_ATTRIBUTE_CACHING:
+        try:
+            await permit_client._preload_existing_attributes()
+        except Exception as e:
+            logger.warning(f"Failed to preload existing attributes: {e}")
+
     # Initialize policy engine
     policy_engine = PolicyEngine(config, permit_client)
     logger.info("Policy engine initialized")
@@ -78,6 +85,15 @@ async def lifespan(app: FastAPI):
     # discovery cache is invalidated whenever a component re-registers
     # (prevents stale empty-field results from persisting).
     component_service.set_transformer_service(transformer_service)
+
+    # Start debounced Permit.io sync task if configured
+    if config.PERMIT_SYNC_INTERVAL_SECONDS > 0:
+        await component_service.start_permit_sync()
+        logger.info(
+            f"Permit.io sync task started (interval={config.PERMIT_SYNC_INTERVAL_SECONDS}s)"
+        )
+    else:
+        logger.info("Permit.io sync disabled (PERMIT_SYNC_INTERVAL_SECONDS=0), using immediate sync")
 
     # Load transformer pipelines from file
     try:
@@ -115,6 +131,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down Policy Service...")
+
+    # Stop the debounced Permit.io sync task
+    if component_service:
+        try:
+            await component_service.stop_permit_sync()
+            logger.info("Permit.io sync task stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping Permit.io sync task: {e}")
 
 
 # Create FastAPI application
