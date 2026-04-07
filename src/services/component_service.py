@@ -162,15 +162,14 @@ class ComponentService:
 
                         async with self._sync_lock:
                             self._sync_retries[component_id] = retry_count + 1
-                            # Re-queue for retry
-                            self._pending_syncs[component_id] = config
 
                         logger.warning(
                             f"Rate limited for {component_id} (attempt {retry_count + 1}/{max_retries}), "
-                            f"re-queueing with {backoff_delay}s backoff"
+                            f"scheduling retry in {backoff_delay}s"
                         )
 
-                        # Schedule retry with backoff delay
+                        # Schedule retry with backoff delay; do not re-queue immediately,
+                        # otherwise the next sync cycle can retry before the delay elapses.
                         asyncio.create_task(self._schedule_retry(component_id, config, backoff_delay))
                     else:
                         # Max retries exceeded or non-rate-limit error
