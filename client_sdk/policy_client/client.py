@@ -927,5 +927,17 @@ class SyncPolicyClient:
         """Clear the decision cache."""
         self._async_client.clear_cache()
 
+    def ensure_pipeline_ready(
+        self,
+        source_id: str,
+        sink_id: str,
+        action: str = "read"
+    ) -> None:
+        """Synchronous version of ensure_pipeline_ready."""
+        self._run_coroutine(
+            self._async_client.ensure_pipeline_ready(source_id, sink_id, action),
+            timeout=self._async_client.registration_timeout,
+        )
+
     def __repr__(self) -> str:
         return f"SyncPolicyClient({self._async_client})"
