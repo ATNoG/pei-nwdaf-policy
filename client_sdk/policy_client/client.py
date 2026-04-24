@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -140,6 +141,14 @@ class PolicyClient:
 
         # Decision cache
         self.cache = TTLCache(maxsize=cache_size, ttl=cache_ttl)
+
+        # Pipeline version tracking — used to detect stale cached configs
+        self._last_pipeline_version: int | None = None  # None = never checked
+        self._last_version_check_time: float = 0.0  # monotonic timestamp
+
+        # Compiled pipeline object cache — plain dict, invalidated on version change.
+        # Avoids rebuilding TransformerPipeline from config on every record.
+        self._pipeline_obj_cache: dict[str, Any] = {}
 
         # Field cache key for callable sources
         self._fields_cache_key = f"{self.component_id}:fields"
@@ -377,8 +386,14 @@ class PolicyClient:
                     json=data,
                     timeout=aiohttp.ClientTimeout(total=effective_timeout)
                 ) as response:
-                    response.raise_for_status()
-                    return await response.json()
+                    # Capture response body for better error messages
+                    response_text = await response.text()
+                    if response.status >= 400:
+                        raise Exception(
+                            f"HTTP {response.status}, message='{response.reason}', "
+                            f"url='{url}', body='{response_text[:500]}'"
+                        )
+                    return json.loads(response_text) if response_text else {}
 
         except asyncio.TimeoutError:
             raise Exception(f"Timeout connecting to Policy Service: {url}")
@@ -490,7 +505,7 @@ class PolicyClient:
         # Apply transformations locally
         if pipeline_config.get("steps"):
             try:
-                transformed_data = self._apply_pipeline(data, pipeline_config)
+                transformed_data = self._apply_pipeline_cached(source_id, sink_id, data, pipeline_config)
                 transformations = [s["type"] for s in pipeline_config["steps"]]
             except Exception as e:
                 logger.error(f"Failed to apply pipeline: {e}")
@@ -516,10 +531,22 @@ class PolicyClient:
         )
 
     async def _get_pipeline_config(self, source_id: str, sink_id: str) -> dict:
-        """Fetch and cache pipeline configuration."""
+        """Fetch and cache pipeline configuration.
+
+        Checks the server-side pipeline version before returning a cached
+        result.  If the version has changed since the last fetch, all
+        pipeline cache entries are evicted so the next fetch hits the server.
+        """
         cache_key = f"pipeline:{source_id}:{sink_id}"
+
+        # Before returning a cached pipeline, verify the version is still current.
+        # The version check itself is cached for 5 seconds to avoid hammering
+        # the server on every data record.
         if cached := self.cache.get(cache_key):
-            return cached
+            await self._check_pipeline_version()
+            # Re-check — _check_pipeline_version may have cleared the cache
+            if cached := self.cache.get(cache_key):
+                return cached
 
         response = await self._request(
             "GET",
@@ -528,11 +555,67 @@ class PolicyClient:
         self.cache[cache_key] = response
         return response
 
-    def _apply_pipeline(self, data: dict, pipeline_config: dict) -> dict:
-        """Apply transformations locally using the transformer pipeline."""
+    async def _check_pipeline_version(self) -> None:
+        """Check the server-side pipeline version.
+
+        If it differs from the last-seen version, evict all ``pipeline:*``
+        cache entries so subsequent calls fetch fresh configs.
+        Rate-limited to at most once every 5 seconds.
+        """
+        # Rate-limit: only check at most once every 5 seconds
+        now = time.monotonic()
+        if now - self._last_version_check_time < 5.0:
+            return
+
+        try:
+            resp = await self._request(
+                "GET",
+                "/api/v1/transformers/version",
+            )
+            self._last_version_check_time = time.monotonic()
+            current_version = resp.get("version", 0)
+
+            if self._last_pipeline_version is None:
+                # First check — just remember the version
+                self._last_pipeline_version = current_version
+                return
+
+            if current_version != self._last_pipeline_version:
+                # Version changed — evict all pipeline cache entries
+                pipeline_keys = [
+                    k for k in list(self.cache.keys())
+                    if isinstance(k, str) and k.startswith("pipeline:")
+                ]
+                for k in pipeline_keys:
+                    del self.cache[k]
+                # Also evict compiled pipeline objects
+                evicted_objs = len(self._pipeline_obj_cache)
+                self._pipeline_obj_cache.clear()
+                self._last_pipeline_version = current_version
+                logger.info(
+                    f"Pipeline version changed to {current_version}, "
+                    f"evicted {len(pipeline_keys)} cached config(s) "
+                    f"and {evicted_objs} compiled pipeline(s)"
+                )
+
+        except Exception as e:
+            # Version check failure should not break the hot path
+            logger.debug(f"Pipeline version check failed: {e}")
+
+    def _apply_pipeline_cached(self, source_id: str, sink_id: str, data: dict, pipeline_config: dict) -> dict:
+        """Apply transformations using a cached TransformerPipeline object.
+
+        The compiled pipeline is cached by (source_id, sink_id) and reused
+        across records instead of rebuilding from config on every call.
+        """
         from policy_client.transformers import TransformerPipeline
 
-        pipeline = TransformerPipeline.from_config(pipeline_config)
+        cache_key = f"pipeline_obj:{source_id}:{sink_id}"
+        pipeline = self._pipeline_obj_cache.get(cache_key)
+        if pipeline is None:
+            pipeline = TransformerPipeline.from_config(pipeline_config)
+            self._pipeline_obj_cache[cache_key] = pipeline
+
         return pipeline.execute_sync(data)
 
     async def register_ml_model(
@@ -595,6 +678,29 @@ class PolicyClient:
 
         except Exception as e:
             logger.error(f"Failed to register ML model: {e}")
+            return False
+
+    async def unregister_ml_model(self, model_name: str) -> bool:
+        """
+        Unregister an ML model from the Policy Service.
+
+        Calls ``DELETE /api/v1/ml/models/{model_name}``.
+
+        Args:
+            model_name: Human-readable model name (used to derive component ID).
+
+        Returns:
+            True if successful, False on error.
+        """
+        try:
+            await self._request(
+                "DELETE",
+                f"/api/v1/ml/models/{model_name}",
+            )
+            logger.info(f"ML model unregistered: {model_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unregister ML model: {e}")
             return False
 
     def clear_cache(self) -> None:
@@ -782,9 +888,56 @@ class SyncPolicyClient:
         self._heartbeat_stop = None
         logger.info(f"Sync heartbeat stopped for {self._async_client.component_id}")
 
+    def register_ml_model(
+        self,
+        model_id: str,
+        model_name: str,
+        input_fields: list[str],
+        output_fields: list[str],
+        data_type: str,
+        architecture: str | None = None,
+        permit_user_key: str | None = None,
+        additional_roles: list[str] | None = None,
+        window_duration_seconds: int | None = None,
+    ) -> bool:
+        """Synchronous version of register_ml_model."""
+        return self._run_coroutine(
+            self._async_client.register_ml_model(
+                model_id,
+                model_name,
+                input_fields,
+                output_fields,
+                data_type,
+                architecture,
+                permit_user_key,
+                additional_roles,
+                window_duration_seconds,
+            ),
+            timeout=self._async_client.registration_timeout,
+        )
+
+    def unregister_ml_model(self, model_name: str) -> bool:
+        """Synchronous version of unregister_ml_model."""
+        return self._run_coroutine(
+            self._async_client.unregister_ml_model(model_name),
+            timeout=self._async_client.registration_timeout,
+        )
+
     def clear_cache(self) -> None:
         """Clear the decision cache."""
         self._async_client.clear_cache()
+
+    def ensure_pipeline_ready(
+        self,
+        source_id: str,
+        sink_id: str,
+        action: str = "read"
+    ) -> None:
+        """Synchronous version of ensure_pipeline_ready."""
+        self._run_coroutine(
+            self._async_client.ensure_pipeline_ready(source_id, sink_id, action),
+            timeout=self._async_client.registration_timeout,
+        )
 
     def __repr__(self) -> str:
         return f"SyncPolicyClient({self._async_client})"
