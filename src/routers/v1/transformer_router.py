@@ -156,6 +156,20 @@ async def clear_field_cache(
 
 # ==================== Pipeline CRUD Endpoints ====================
 
+
+@router.get("/version", response_model=Dict[str, Any])
+async def get_pipeline_version(
+    transformer_service: TransformerService = Depends(get_transformer_service)
+) -> Dict[str, Any]:
+    """
+    Get the current pipeline configuration version.
+
+    SDK clients poll this endpoint to detect when their cached pipeline
+    configs are stale and need re-fetching.
+    """
+    return {"version": transformer_service._pipeline_version}
+
+
 @router.post("/{pipeline_id}", response_model=TransformerPipelineResponse, status_code=status.HTTP_201_CREATED)
 async def create_pipeline(
     pipeline_id: str,
@@ -177,6 +191,9 @@ async def create_pipeline(
         # Convert steps to dicts
         steps = [step.dict() for step in config.steps]
         pipeline = await transformer_service.create_pipeline(pipeline_id, steps)
+
+        # Clear field cache so the next discovery returns fresh results
+        transformer_service._field_cache.clear()
 
         return TransformerPipelineResponse(
             pipeline_id=pipeline_id,
@@ -274,3 +291,6 @@ async def delete_pipeline(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "not_found", "message": f"Pipeline not found: {pipeline_id}"}
         )
+
+    # Clear field cache so deleted pipeline doesn't leave stale entries
+    transformer_service._field_cache.clear()
