@@ -33,6 +33,8 @@ class TransformerType(str, Enum):
     REDACTION = "redaction"
     HASHING = "hashing"
     SUBSTITUTION = "substitution"
+    HOMOMORPHIC_ENCRYPT = "homomorphic_encrypt"
+    HOMOMORPHIC_DECRYPT = "homomorphic_decrypt"
 
 
 class MLDataType(str, Enum):

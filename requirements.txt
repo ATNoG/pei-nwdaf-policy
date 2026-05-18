@@ -17,6 +17,10 @@ requests==2.33.0
 # Kafka (for client SDK)
 confluent_kafka==2.12.2
 
+# Homomorphic encryption
+tenseal>=0.3.14
+numpy>=2.4.5
+
 # Development dependencies
 bandit
 safety==3.7.0

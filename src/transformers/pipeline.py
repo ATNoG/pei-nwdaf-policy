@@ -7,6 +7,8 @@ from src.transformers.field_filter import FieldFilterTransformer
 from src.transformers.redaction import RedactionTransformer
 from src.transformers.hashing import HashingTransformer
 from src.transformers.substitution import SubstitutionTransformer
+from src.transformers.homomorphic import HomomorphicEncryptionTransformer
+from src.transformers.fhe_decrypt import HomomorphicDecryptionTransformer
 
 
 class TransformerPipeline:
@@ -165,6 +167,10 @@ class TransformerPipeline:
                 pipeline.add_hashing(**params)
             elif step_type == "substitution":
                 pipeline.add_substitution(**params)
+            elif step_type == "homomorphic_encrypt":
+                pipeline.add_transformer(HomomorphicEncryptionTransformer(**params))
+            elif step_type == "homomorphic_decrypt":
+                pipeline.add_transformer(HomomorphicDecryptionTransformer(**params))
             else:
                 raise ValueError(f"Unknown transformer type: {step_type}")
 
@@ -210,8 +216,23 @@ class TransformerPipeline:
                         "substitutions": transformer.substitutions
                     }
                 })
+            elif isinstance(transformer, HomomorphicEncryptionTransformer):
+                steps.append({
+                    "type": "homomorphic_encrypt",
+                    "params": {
+                        "fields": list(transformer.fields),
+                        "key_dir": transformer.key_dir,
+                    },
+                })
+            elif isinstance(transformer, HomomorphicDecryptionTransformer):
+                steps.append({
+                    "type": "homomorphic_decrypt",
+                    "params": {
+                        "fields": list(transformer.fields),
+                        "key_dir": transformer.key_dir,
+                    },
+                })
             else:
-                # Custom transformer - use class name
                 steps.append({
                     "type": "custom",
                     "params": {
