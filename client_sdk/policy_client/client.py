@@ -530,6 +530,22 @@ class PolicyClient:
             transformations=transformations
         )
 
+    async def receive_data(
+        self,
+        source_id: str,
+        data: dict[str, Any],
+        action: str = "read"
+    ) -> ProcessResult:
+        """
+        Apply ingress-side policy when this component receives data from source_id.
+
+        Equivalent to process_data(source_id, self.component_id, data) — the
+        component is the sink. Enables pipelines like "kafka_to_<component>"
+        to transform data before the component consumes it, without affecting
+        other consumers of the same source.
+        """
+        return await self.process_data(source_id, self.component_id, data, action)
+
     async def _get_pipeline_config(self, source_id: str, sink_id: str) -> dict:
         """Fetch and cache pipeline configuration.
 
@@ -787,6 +803,15 @@ class SyncPolicyClient:
         return self._run_coroutine(self._async_client.process_data(
             source_id, sink_id, data, action
         ))
+
+    def receive_data(
+        self,
+        source_id: str,
+        data: dict[str, Any],
+        action: str = "read"
+    ) -> ProcessResult:
+        """Synchronous version of receive_data."""
+        return self._run_coroutine(self._async_client.receive_data(source_id, data, action))
 
     def register_component(
         self,

@@ -35,7 +35,6 @@ def _build_context() -> ts.Context:
         coeff_mod_bit_sizes=_COEFF_MOD_BIT_SIZES,
     )
     ctx.global_scale = _GLOBAL_SCALE
-    ctx.generate_galois_keys()
     ctx.generate_relin_keys()
     return ctx
 
