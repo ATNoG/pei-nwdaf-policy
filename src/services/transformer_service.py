@@ -112,7 +112,8 @@ class TransformerService:
                 with open(self.config_path, 'r') as f:
                     all_configs = json.load(f)
             else:
-                all_configs = {"pipelines": {}}
+                all_configs = {}
+            all_configs.setdefault("pipelines", {})
 
             # Add/update pipeline
             all_configs["pipelines"][pipeline_id] = config

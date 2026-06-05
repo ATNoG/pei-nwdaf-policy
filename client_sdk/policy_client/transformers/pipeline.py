@@ -7,6 +7,7 @@ from policy_client.transformers.field_filter import FieldFilterTransformer
 from policy_client.transformers.redaction import RedactionTransformer
 from policy_client.transformers.hashing import HashingTransformer
 from policy_client.transformers.substitution import SubstitutionTransformer
+from policy_client.transformers.homomorphic import HomomorphicEncryptionTransformer, HomomorphicDecryptionTransformer
 
 
 class TransformerPipeline:
@@ -164,6 +165,10 @@ class TransformerPipeline:
                 pipeline.add_hashing(**params)
             elif step_type == "substitution":
                 pipeline.add_substitution(**params)
+            elif step_type == "homomorphic_encrypt":
+                pipeline.add_transformer(HomomorphicEncryptionTransformer(**params))
+            elif step_type == "homomorphic_decrypt":
+                pipeline.add_transformer(HomomorphicDecryptionTransformer(**params))
             else:
                 raise ValueError(f"Unknown transformer type: {step_type}")
 
